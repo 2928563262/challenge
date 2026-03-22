@@ -1,0 +1,28 @@
+{
+  "relation_types": [
+    {
+      "name": "CLAUSE_MENTIONS_ENTITY",
+      "description": "条文提及实体"
+    },
+    {
+      "name": "SYNDROME_HAS_SYMPTOM",
+      "description": "证候具有症状"
+    },
+    {
+      "name": "SYNDROME_TO_FORMULA",
+      "description": "证候对应方剂"
+    },
+    {
+      "name": "FORMULA_CONTAINS_HERB",
+      "description": "方剂包含中药"
+    },
+    {
+      "name": "SYNDROME_TO_THERAPY",
+      "description": "证候采用治法"
+    },
+    {
+      "name": "FORMULA_HAS_ADMINISTRATION",
+      "description": "方剂具有煎服法"
+    }
+  ]
+}

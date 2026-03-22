@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Django
+*.sqlite3
+*.log
+backend/.env
+backend/staticfiles/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent / tool metadata
+.agents/
+.claude/
+.codex/
+
+# Runtime / experiment artifacts
+experiments/
+tools/neo4j-import-run/
+tools/neo4j-community-*/
+tools/neo4j-dev/
+
+# Model checkpoints and large artifacts
+models/baseline/
+
+# Generated datasets and processed exports
+data/processed/
+data/annotation/preannotated_corpus.jsonl
+data/annotation/preannotation_stats.json
+data/annotation/cleaned_silver_corpus.jsonl
+data/annotation/dropped_records.jsonl
+data/annotation/error_examples.md
+data/annotation/cleaning_report.md
+data/annotation/review_candidates.jsonl
+data/annotation/review_candidate_stats.json
+
+# Optional local caches
+*.tmp
+*.bak
+
+# Keep templates
+!backend/.env.example
+!frontend/.env.example

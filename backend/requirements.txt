@@ -1,0 +1,17 @@
+﻿asgiref==3.11.1
+Django==6.0.3
+django-cors-headers==4.9.0
+djangorestframework==3.16.1
+python-dotenv==1.2.2
+sqlparse==0.5.5
+tzdata==2025.3
+# Transformer and graph dependencies
+transformers>=4.46.0
+safetensors>=0.4.5
+sentencepiece>=0.2.0
+neo4j>=5.28.0
+torch>=2.4.0
+datasets>=2.21.0
+evaluate>=0.4.3
+seqeval>=1.2.2
+accelerate>=0.34.0
