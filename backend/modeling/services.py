@@ -7,6 +7,8 @@ from typing import Any
 
 from django.conf import settings
 
+from .registry import activate_model, get_active_model, get_registry_path, list_models
+
 DEFAULT_NER_BASE_MODEL = os.getenv("NER_BASE_MODEL", "ethanyt/guwenbert-base")
 DEFAULT_RELATION_BASE_MODEL = os.getenv("RELATION_BASE_MODEL", DEFAULT_NER_BASE_MODEL)
 DEFAULT_NER_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "ner" / "guwenbert-ner-baseline" / "best"
@@ -47,18 +49,48 @@ class InvalidModelInputError(ValueError):
     pass
 
 
+def _build_fallback_model_record(task: str, model_dir: Path, base_model_name: str) -> dict[str, Any]:
+    summary_path = model_dir / "run_summary.json"
+    summary = _load_manifest(summary_path) if summary_path.exists() else None
+    dataset_dir = str(summary.get("dataset_dir") or "") if summary else ""
+    return {
+        "id": f"default-{task}",
+        "task": task,
+        "run_name": str(summary.get("run_name") or f"default-{task}") if summary else f"default-{task}",
+        "model_name": str(summary.get("model_name") or base_model_name) if summary else base_model_name,
+        "model_dir": str(model_dir),
+        "dataset_dir": dataset_dir,
+        "dataset_source": str(summary.get("dataset_source") or "baseline") if summary else "baseline",
+        "validation_metrics": dict(summary.get("validation_metrics") or {}) if summary else {},
+        "train_metrics": dict(summary.get("train_metrics") or {}) if summary else {},
+        "test_metrics": dict(summary.get("test_metrics") or {}) if summary else {},
+        "created_at": str(summary.get("created_at") or "") if summary else "",
+        "updated_at": str(summary.get("created_at") or "") if summary else "",
+        "is_active": True,
+    }
+
+
+def get_active_model_record(task: str) -> dict[str, Any]:
+    active = get_active_model(task)
+    if active is not None:
+        return active
+    if task == "ner":
+        return _build_fallback_model_record("ner", DEFAULT_NER_MODEL_DIR, DEFAULT_NER_BASE_MODEL)
+    return _build_fallback_model_record("relation", DEFAULT_RELATION_MODEL_DIR, DEFAULT_RELATION_BASE_MODEL)
+
+
 def get_ner_model_dir() -> Path:
     configured = os.getenv("NER_MODEL_DIR")
     if configured:
         return Path(configured)
-    return DEFAULT_NER_MODEL_DIR
+    return Path(str(get_active_model_record("ner").get("model_dir") or DEFAULT_NER_MODEL_DIR))
 
 
 def get_relation_model_dir() -> Path:
     configured = os.getenv("RELATION_MODEL_DIR")
     if configured:
         return Path(configured)
-    return DEFAULT_RELATION_MODEL_DIR
+    return Path(str(get_active_model_record("relation").get("model_dir") or DEFAULT_RELATION_MODEL_DIR))
 
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:
@@ -99,22 +131,6 @@ def _artifact_commands() -> dict[str, str]:
     }
 
 
-def _accepted_pipeline_commands() -> dict[str, str]:
-    return {
-        "refresh_pipeline": "accepted -> export -> incremental -> merged",
-        "train_ner_with_merged": (
-            "python scripts/train_ner_baseline.py "
-            f"--dataset-dir {DEFAULT_MERGED_ROOT / 'ner'} --epochs 3 --batch-size 4 "
-            "--run-name guwenbert-ner-accepted-merged"
-        ),
-        "train_relation_with_merged": (
-            "python scripts/train_relation_baseline.py "
-            f"--dataset-dir {DEFAULT_MERGED_ROOT / 'relation'} --epochs 1 --batch-size 4 "
-            "--run-name guwenbert-relation-accepted-merged"
-        ),
-    }
-
-
 def get_accepted_pipeline_status() -> dict[str, Any]:
     accepted_report = _read_report(DEFAULT_ACCEPTED_REPORT_PATH)
     incremental_report = _read_report(DEFAULT_INCREMENTAL_REPORT_PATH)
@@ -128,8 +144,32 @@ def get_accepted_pipeline_status() -> dict[str, Any]:
         "merge_report": merge_report,
         "merged_ner_manifest": merged_ner_manifest,
         "merged_relation_manifest": merged_relation_manifest,
-        "commands": _accepted_pipeline_commands(),
     }
+
+
+def get_model_registry_status() -> dict[str, Any]:
+    active_ner = get_active_model_record("ner")
+    active_relation = get_active_model_record("relation")
+    ner_records = list_models("ner")
+    relation_records = list_models("relation")
+    if not any(record.get("id") == active_ner.get("id") for record in ner_records):
+        ner_records = [active_ner, *ner_records]
+    if not any(record.get("id") == active_relation.get("id") for record in relation_records):
+        relation_records = [active_relation, *relation_records]
+
+    return {
+        "path": str(get_registry_path()),
+        "active": {
+            "ner": active_ner,
+            "relation": active_relation,
+        },
+        "ner": ner_records,
+        "relation": relation_records,
+    }
+
+
+def activate_registered_model(task: str, model_id: str) -> dict[str, Any]:
+    return activate_model(task=task, model_id=model_id)
 
 
 def run_accepted_pipeline_refresh(limit: int | None = None) -> dict[str, Any]:
@@ -334,6 +374,7 @@ def _constrain_relation_predictions(
 
 
 def get_ner_status() -> dict[str, Any]:
+    active_model = get_active_model_record("ner")
     model_dir = get_ner_model_dir()
     manifest = _load_manifest(DEFAULT_NER_DATASET_MANIFEST)
     missing_dependencies = _missing_dependencies(RUNTIME_DEPENDENCIES)
@@ -341,7 +382,7 @@ def get_ner_status() -> dict[str, Any]:
 
     return {
         "ready": checkpoint_exists and not missing_dependencies,
-        "base_model_name": DEFAULT_NER_BASE_MODEL,
+        "base_model_name": str(active_model.get("model_name") or DEFAULT_NER_BASE_MODEL),
         "model_dir": str(model_dir),
         "checkpoint_exists": checkpoint_exists,
         "dataset_manifest_exists": manifest is not None,
@@ -351,17 +392,19 @@ def get_ner_status() -> dict[str, Any]:
         "label_list": list(manifest.get("label_list", [])) if manifest else [],
         "dataset_summary": manifest.get("splits") if manifest else None,
         "commands": _artifact_commands(),
+        "active_model": active_model,
     }
 
 
 def get_relation_status() -> dict[str, Any]:
+    active_model = get_active_model_record("relation")
     model_dir = get_relation_model_dir()
     manifest = _load_manifest(DEFAULT_RELATION_DATASET_MANIFEST)
     missing_dependencies = _missing_dependencies(RUNTIME_DEPENDENCIES)
     checkpoint_exists = model_dir.exists()
     return {
         "ready": checkpoint_exists and not missing_dependencies,
-        "base_model_name": DEFAULT_RELATION_BASE_MODEL,
+        "base_model_name": str(active_model.get("model_name") or DEFAULT_RELATION_BASE_MODEL),
         "model_dir": str(model_dir),
         "checkpoint_exists": checkpoint_exists,
         "dataset_manifest_exists": manifest is not None,
@@ -371,6 +414,7 @@ def get_relation_status() -> dict[str, Any]:
         "label_list": list(manifest.get("label_list", [])) if manifest else [],
         "dataset_summary": manifest.get("splits") if manifest else None,
         "commands": _artifact_commands(),
+        "active_model": active_model,
     }
 
 
@@ -379,6 +423,7 @@ def get_model_summary() -> dict[str, Any]:
         "ner": get_ner_status(),
         "relation": get_relation_status(),
         "accepted_pipeline": get_accepted_pipeline_status(),
+        "registry": get_model_registry_status(),
     }
 
 

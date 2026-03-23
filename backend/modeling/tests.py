@@ -1,13 +1,29 @@
-from django.test import TestCase
-from rest_framework.test import APIClient
-import torch
+import os
+import tempfile
 from unittest.mock import patch
 
+import torch
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from .registry import register_model_run
 from .services import _apply_relation_heuristics, _constrain_relation_predictions
 
 
 class ModelingApiTests(TestCase):
     client_class = APIClient
+
+    def setUp(self):
+        super().setUp()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.registry_path = os.path.join(self.temp_dir.name, "model_registry.json")
+        self.registry_patch = patch.dict(os.environ, {"MODEL_REGISTRY_PATH": self.registry_path})
+        self.registry_patch.start()
+
+    def tearDown(self):
+        self.registry_patch.stop()
+        self.temp_dir.cleanup()
+        super().tearDown()
 
     def test_model_summary_endpoint_returns_ner_and_relation_sections(self):
         response = self.client.get("/api/v1/model/summary/")
@@ -17,9 +33,11 @@ class ModelingApiTests(TestCase):
         self.assertIn("ner", payload)
         self.assertIn("relation", payload)
         self.assertIn("accepted_pipeline", payload)
+        self.assertIn("registry", payload)
         self.assertIn("dataset_manifest_exists", payload["relation"])
         self.assertIn("checkpoint_exists", payload["relation"])
         self.assertIn("accepted_report", payload["accepted_pipeline"])
+        self.assertIn("active", payload["registry"])
 
     def test_ner_status_endpoint_returns_state(self):
         response = self.client.get("/api/v1/model/ner/status/")
@@ -82,6 +100,62 @@ class ModelingApiTests(TestCase):
         response = self.client.post("/api/v1/model/datasets/accepted/refresh/", {"limit": 0}, format="json")
 
         self.assertEqual(response.status_code, 400)
+
+    def test_model_registry_endpoint_returns_registered_models(self):
+        record = register_model_run(
+            {
+                "run_name": "demo-ner",
+                "model_name": "ethanyt/guwenbert-base",
+                "dataset_dir": "D:/code/python/challenge/data/processed/merged/ner",
+                "output_dir": "D:/code/python/challenge/models/baseline/ner/demo/best",
+                "validation_metrics": {"eval_f1": 0.82},
+            },
+            task="ner",
+            activate=True,
+        )
+
+        response = self.client.get("/api/v1/model/registry/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["active"]["ner"]["id"], record["id"])
+        self.assertEqual(len(payload["ner"]), 1)
+
+    def test_model_registry_activate_switches_active_model(self):
+        first = register_model_run(
+            {
+                "run_name": "demo-ner-1",
+                "model_name": "ethanyt/guwenbert-base",
+                "dataset_dir": "D:/code/python/challenge/data/processed/ner",
+                "output_dir": "D:/code/python/challenge/models/baseline/ner/demo-1/best",
+                "validation_metrics": {"eval_f1": 0.71},
+            },
+            task="ner",
+            activate=True,
+        )
+        second = register_model_run(
+            {
+                "run_name": "demo-ner-2",
+                "model_name": "ethanyt/guwenbert-base",
+                "dataset_dir": "D:/code/python/challenge/data/processed/merged/ner",
+                "output_dir": "D:/code/python/challenge/models/baseline/ner/demo-2/best",
+                "validation_metrics": {"eval_f1": 0.82},
+            },
+            task="ner",
+            activate=False,
+        )
+
+        response = self.client.post(
+            "/api/v1/model/registry/activate/",
+            {"task": "ner", "model_id": second["id"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["record"]["id"], second["id"])
+        self.assertEqual(payload["registry"]["active"]["ner"]["id"], second["id"])
+        self.assertNotEqual(first["id"], second["id"])
 
 
 class RelationConstraintTests(TestCase):

@@ -36,6 +36,18 @@ export interface GraphEntity {
   labels: string[];
 }
 
+export interface GraphVersionRecord {
+  id: string;
+  run_name: string;
+  source_input: string;
+  source_type: string;
+  output_dir: string;
+  stats: Record<string, number>;
+  created_at: string;
+  updated_at: string;
+  is_active: boolean;
+}
+
 export interface GraphSummary {
   input_record_count: number;
   entity_node_count: number;
@@ -45,6 +57,7 @@ export interface GraphSummary {
   entity_type_breakdown: Record<string, number>;
   relation_type_breakdown: Record<string, number>;
   top_entities: GraphEntity[];
+  graph_version: GraphVersionRecord;
 }
 
 export interface GraphEntitySearchResult {
@@ -102,6 +115,23 @@ export interface GraphShowcaseResponse {
   cases: GraphShowcaseCase[];
 }
 
+export interface ReviewedGraphRefreshResponse {
+  summary: Record<string, unknown>;
+  registry: GraphRegistryStatus;
+  graph_summary: GraphSummary;
+}
+
+export interface GraphRegistryStatus {
+  path: string;
+  active: GraphVersionRecord;
+  versions: GraphVersionRecord[];
+}
+
+export interface GraphActivationResponse {
+  record: GraphVersionRecord;
+  registry: GraphRegistryStatus;
+}
+
 export interface DatasetSplitSummary {
   record_count?: number;
   token_count?: number;
@@ -126,6 +156,7 @@ export interface ModelRuntimeStatus {
   label_list: string[];
   dataset_summary: Record<string, DatasetSplitSummary> | null;
   commands: Record<string, string>;
+  active_model: ModelRegistryRecord;
 }
 
 export interface ArtifactReport<T = Record<string, unknown> | null> {
@@ -141,13 +172,39 @@ export interface AcceptedPipelineStatus {
   merge_report: ArtifactReport;
   merged_ner_manifest: ArtifactReport;
   merged_relation_manifest: ArtifactReport;
-  commands: Record<string, string>;
+}
+
+export interface ModelRegistryRecord {
+  id: string;
+  task: "ner" | "relation";
+  run_name: string;
+  model_name: string;
+  model_dir: string;
+  dataset_dir: string;
+  dataset_source: string;
+  validation_metrics: Record<string, number>;
+  train_metrics: Record<string, number>;
+  test_metrics: Record<string, number>;
+  created_at: string;
+  updated_at: string;
+  is_active: boolean;
+}
+
+export interface ModelRegistryStatus {
+  path: string;
+  active: {
+    ner: ModelRegistryRecord;
+    relation: ModelRegistryRecord;
+  };
+  ner: ModelRegistryRecord[];
+  relation: ModelRegistryRecord[];
 }
 
 export interface ModelSummary {
   ner: ModelRuntimeStatus;
   relation: ModelRuntimeStatus;
   accepted_pipeline: AcceptedPipelineStatus;
+  registry: ModelRegistryStatus;
 }
 
 export interface NerPredictionEntity {
@@ -231,4 +288,10 @@ export interface AcceptedPipelineRefreshResponse {
   incremental_report: Record<string, unknown>;
   merge_report: Record<string, unknown>;
   status: AcceptedPipelineStatus;
+}
+
+export interface ModelActivationResponse {
+  task: "ner" | "relation";
+  record: ModelRegistryRecord;
+  registry: ModelRegistryStatus;
 }

@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,11 @@ from transformers import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.modeling.registry import infer_dataset_source, register_model_run
+
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_DATASET_DIR = DATA_DIR / "processed" / "relation"
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "models" / "baseline" / "relation"
@@ -126,6 +133,7 @@ def train_baseline(
     epochs: int,
     learning_rate: float,
     batch_size: int,
+    activate: bool,
 ) -> dict[str, Any]:
     dataset, label_list = load_dataset_dict(dataset_dir)
     label_to_id = {label: index for index, label in enumerate(label_list)}
@@ -181,20 +189,27 @@ def train_baseline(
     train_result = trainer.train()
     validation_metrics = trainer.evaluate(tokenized_dataset["validation"])
     test_metrics = trainer.evaluate(tokenized_dataset["test"], metric_key_prefix="test")
-    trainer.save_model(str(output_dir / "best"))
-    tokenizer.save_pretrained(str(output_dir / "best"))
+    best_dir = output_dir / "best"
+    trainer.save_model(str(best_dir))
+    tokenizer.save_pretrained(str(best_dir))
 
     summary = {
         "run_name": run_name,
+        "task": "relation",
         "model_name": model_name,
         "dataset_dir": str(dataset_dir),
+        "dataset_source": infer_dataset_source(dataset_dir),
         "label_list": label_list,
         "train_metrics": train_result.metrics,
         "validation_metrics": validation_metrics,
         "test_metrics": test_metrics,
-        "output_dir": str(output_dir / "best"),
+        "output_dir": str(best_dir),
+        "created_at": datetime.now(timezone.utc).astimezone().isoformat(),
     }
+    registry_record = register_model_run(summary=summary, task="relation", activate=activate)
+    summary["registry_record"] = registry_record
     (experiment_dir / "metrics.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (best_dir / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 
 
@@ -208,6 +223,7 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-5)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--activate", action="store_true")
     args = parser.parse_args()
 
     summary = train_baseline(
@@ -219,6 +235,7 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
+        activate=args.activate,
     )
     print(json.dumps(summary, ensure_ascii=False))
 

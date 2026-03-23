@@ -9,12 +9,10 @@ from typing import Any
 
 from django.conf import settings
 
+from .registry import activate_graph, get_active_graph, get_registry_path, list_graph_versions
+
 GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph"
-SUMMARY_PATH = GRAPH_DIR / "graph_export_summary.json"
-ENTITY_PATH = GRAPH_DIR / "entity_nodes.csv"
-RELATION_PATH = GRAPH_DIR / "entity_relations.csv"
-CLAUSE_PATH = GRAPH_DIR / "clause_nodes.csv"
-MENTION_PATH = GRAPH_DIR / "clause_mentions.csv"
+DEFAULT_REVIEWED_GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph-reviewed"
 
 SHOWCASE_CASES = [
     {
@@ -56,6 +54,68 @@ class GraphDataUnavailableError(RuntimeError):
     pass
 
 
+def _graph_paths(graph_dir: Path) -> dict[str, Path]:
+    return {
+        "summary": graph_dir / "graph_export_summary.json",
+        "entity": graph_dir / "entity_nodes.csv",
+        "relation": graph_dir / "entity_relations.csv",
+        "clause": graph_dir / "clause_nodes.csv",
+        "mention": graph_dir / "clause_mentions.csv",
+    }
+
+
+def get_active_graph_record() -> dict[str, Any]:
+    active = get_active_graph()
+    if active is not None:
+        return active
+    return {
+        "id": "default-graph",
+        "run_name": "default-graph",
+        "source_input": str(Path(settings.DATA_DIR) / "annotation" / "cleaned_silver_corpus.jsonl"),
+        "source_type": "cleaned_silver",
+        "output_dir": str(GRAPH_DIR),
+        "stats": {},
+        "created_at": "",
+        "updated_at": "",
+        "is_active": True,
+    }
+
+
+def get_graph_registry_status() -> dict[str, Any]:
+    active = get_active_graph_record()
+    versions = list_graph_versions()
+    if not any(record.get("id") == active.get("id") for record in versions):
+        versions = [active, *versions]
+    return {
+        "path": str(get_registry_path()),
+        "active": active,
+        "versions": versions,
+    }
+
+
+def activate_graph_version(graph_id: str) -> dict[str, Any]:
+    load_graph_data.cache_clear()
+    return activate_graph(graph_id)
+
+
+def run_reviewed_graph_refresh(statuses: list[str] | None = None, limit: int | None = None) -> dict[str, Any]:
+    from scripts.export_reviewed_graph_csv import export_reviewed_graph
+
+    summary = export_reviewed_graph(
+        output_dir=DEFAULT_REVIEWED_GRAPH_DIR,
+        statuses=statuses or ["accepted", "reviewed"],
+        limit=limit,
+        run_name="graph-reviewed",
+        activate=True,
+    )
+    load_graph_data.cache_clear()
+    return {
+        "summary": summary,
+        "registry": get_graph_registry_status(),
+        "graph_summary": build_graph_summary(),
+    }
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         raise GraphDataUnavailableError(f"Missing graph data file: {path}")
@@ -65,14 +125,18 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
 
 @lru_cache(maxsize=1)
 def load_graph_data() -> dict[str, Any]:
-    if not SUMMARY_PATH.exists():
-        raise GraphDataUnavailableError(f"Missing graph summary file: {SUMMARY_PATH}")
+    active_graph = get_active_graph_record()
+    graph_dir = Path(str(active_graph.get("output_dir") or GRAPH_DIR))
+    paths = _graph_paths(graph_dir)
+    summary_path = paths["summary"]
+    if not summary_path.exists():
+        raise GraphDataUnavailableError(f"Missing graph summary file: {summary_path}")
 
-    summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
-    entity_rows = _read_csv(ENTITY_PATH)
-    relation_rows = _read_csv(RELATION_PATH)
-    clause_rows = _read_csv(CLAUSE_PATH)
-    mention_rows = _read_csv(MENTION_PATH)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    entity_rows = _read_csv(paths["entity"])
+    relation_rows = _read_csv(paths["relation"])
+    clause_rows = _read_csv(paths["clause"])
+    mention_rows = _read_csv(paths["mention"])
 
     entities: dict[str, dict[str, Any]] = {}
     clauses: dict[str, dict[str, Any]] = {}
@@ -146,6 +210,7 @@ def load_graph_data() -> dict[str, Any]:
 
     summary["entity_type_breakdown"] = dict(sorted(entity_type_breakdown.items()))
     summary["relation_type_breakdown"] = dict(sorted(relation_type_breakdown.items()))
+    summary["graph_version"] = active_graph
 
     return {
         "summary": summary,

@@ -8,10 +8,14 @@ import type {
   AnnotationCandidateUpdatePayload,
   CorpusOverview,
   CorpusSearchResult,
+  GraphActivationResponse,
   GraphEntityDetail,
   GraphEntitySearchResult,
+  GraphRegistryStatus,
+  ReviewedGraphRefreshResponse,
   GraphShowcaseResponse,
   GraphSummary,
+  ModelActivationResponse,
   ModelSummary,
   NerPrediction,
   RelationPrediction,
@@ -42,6 +46,26 @@ export async function fetchGraphSummary() {
 
 export async function fetchGraphShowcase() {
   const response = await apiClient.get<GraphShowcaseResponse>("/graph/showcase/");
+  return response.data;
+}
+
+export async function refreshReviewedGraph(payload?: { statuses?: string[]; limit?: number | null }) {
+  const response = await apiClient.post<ReviewedGraphRefreshResponse>("/graph/datasets/reviewed/refresh/", {
+    statuses: payload?.statuses ?? ["accepted", "reviewed"],
+    limit: payload?.limit ?? null,
+  });
+  return response.data;
+}
+
+export async function fetchGraphRegistry() {
+  const response = await apiClient.get<GraphRegistryStatus>("/graph/registry/");
+  return response.data;
+}
+
+export async function activateGraphVersion(graphId: string) {
+  const response = await apiClient.post<GraphActivationResponse>("/graph/registry/activate/", {
+    graph_id: graphId,
+  });
   return response.data;
 }
 
@@ -79,6 +103,14 @@ export async function fetchModelSummary() {
 export async function refreshAcceptedPipeline(limit?: number) {
   const response = await apiClient.post<AcceptedPipelineRefreshResponse>("/model/datasets/accepted/refresh/", {
     limit: limit ?? null,
+  });
+  return response.data;
+}
+
+export async function activateModel(payload: { task: "ner" | "relation"; modelId: string }) {
+  const response = await apiClient.post<ModelActivationResponse>("/model/registry/activate/", {
+    task: payload.task,
+    model_id: payload.modelId,
   });
   return response.data;
 }

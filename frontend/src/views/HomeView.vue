@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
+import axios from "axios";
+
 import { formatEntityTypeLabel } from "../i18n";
-import { fetchGraphShowcase, fetchGraphSummary, fetchOverview } from "../services/api";
-import type { CorpusOverview, GraphEntity, GraphShowcaseCase, GraphSummary } from "../types/api";
+import { activateGraphVersion, fetchGraphRegistry, fetchGraphShowcase, fetchGraphSummary, fetchModelSummary, fetchOverview, refreshReviewedGraph } from "../services/api";
+import type { CorpusOverview, GraphEntity, GraphRegistryStatus, GraphShowcaseCase, GraphSummary, GraphVersionRecord, ModelSummary } from "../types/api";
 
 const router = useRouter();
 const { t } = useI18n();
@@ -13,14 +15,22 @@ const { t } = useI18n();
 const overview = ref<CorpusOverview | null>(null);
 const graphSummary = ref<GraphSummary | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
+const graphRegistry = ref<GraphRegistryStatus | null>(null);
+const modelSummary = ref<ModelSummary | null>(null);
 
 const loadingOverview = ref(false);
 const loadingGraphSummary = ref(false);
 const loadingShowcase = ref(false);
+const loadingGraphRegistry = ref(false);
+const loadingModelSummary = ref(false);
+const refreshingReviewedGraph = ref(false);
+const activatingGraphId = ref("");
 
 const overviewError = ref("");
 const graphError = ref("");
 const showcaseError = ref("");
+const modelError = ref("");
+const graphActionMessage = ref("");
 
 const heroStats = computed(() => {
   if (!graphSummary.value || !overview.value) {
@@ -38,9 +48,91 @@ const heroStats = computed(() => {
 const typeBreakdown = computed(() => Object.entries(graphSummary.value?.entity_type_breakdown ?? {}));
 const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
+const graphVersion = computed(() => graphSummary.value?.graph_version ?? null);
+const graphVersions = computed(() => graphRegistry.value?.versions ?? []);
+const systemStatusCards = computed(() => {
+  if (!modelSummary.value || !graphVersion.value) {
+    return [];
+  }
+
+  const acceptedCount = Number((modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, any> | null)?.stats?.record_count ?? 0);
+  const acceptedUpdatedAt = modelSummary.value.accepted_pipeline.accepted_report.updated_at;
+
+  return [
+    {
+      label: "默认 NER 模型",
+      value: modelSummary.value.registry.active.ner.run_name,
+      meta: `${formatDatasetSource(modelSummary.value.registry.active.ner.dataset_source)} · ${formatModelMetric(modelSummary.value.registry.active.ner)}`,
+    },
+    {
+      label: "默认 RE 模型",
+      value: modelSummary.value.registry.active.relation.run_name,
+      meta: `${formatDatasetSource(modelSummary.value.registry.active.relation.dataset_source)} · ${formatModelMetric(modelSummary.value.registry.active.relation)}`,
+    },
+    {
+      label: "默认图谱版本",
+      value: graphVersion.value.run_name,
+      meta: `${formatGraphSource(graphVersion.value.source_type)} · ${formatGraphMetric(graphVersion.value)}`,
+    },
+    {
+      label: "已采纳记录",
+      value: `${acceptedCount} 条`,
+      meta: `最近更新 ${formatUnixTimestamp(acceptedUpdatedAt)}`,
+    },
+  ];
+});
 
 function formatEntityType(entityTypeName: string) {
   return formatEntityTypeLabel(entityTypeName);
+}
+
+function formatGraphSource(sourceType: string) {
+  if (sourceType === "accepted_reviewed") {
+    return "已复核记录";
+  }
+  if (sourceType === "cleaned_silver") {
+    return "清洗银标准";
+  }
+  return "自定义导出";
+}
+
+function formatDateTime(value: string) {
+  if (!value) {
+    return "未记录";
+  }
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatUnixTimestamp(value: number | null) {
+  if (!value) {
+    return "未记录";
+  }
+  return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatDatasetSource(source: string) {
+  if (source === "merged") {
+    return "合并训练集";
+  }
+  if (source === "incremental") {
+    return "增量数据";
+  }
+  return "基础训练集";
+}
+
+function formatModelMetric(record: ModelSummary["registry"]["active"]["ner"] | ModelSummary["registry"]["active"]["relation"]) {
+  if (record.task === "ner") {
+    const f1 = record.validation_metrics.eval_f1 ?? record.validation_metrics.f1;
+    return typeof f1 === "number" ? `验证 F1 ${f1.toFixed(4)}` : "验证指标未记录";
+  }
+  const macroF1 = record.validation_metrics.eval_macro_f1 ?? record.validation_metrics.macro_f1;
+  return typeof macroF1 === "number" ? `验证 Macro-F1 ${macroF1.toFixed(4)}` : "验证指标未记录";
+}
+
+function formatGraphMetric(record: GraphVersionRecord) {
+  const entityCount = Number(record.stats.entity_node_count ?? 0);
+  const relationCount = Number(record.stats.entity_relation_count ?? 0);
+  return `节点 ${entityCount} · 关系 ${relationCount}`;
 }
 
 function openExplorer(entity: GraphEntity) {
@@ -82,6 +174,70 @@ async function loadGraphSummary() {
   }
 }
 
+async function loadGraphRegistry() {
+  loadingGraphRegistry.value = true;
+  try {
+    graphRegistry.value = await fetchGraphRegistry();
+  } catch {
+    graphError.value = "图谱版本列表加载失败，请确认图谱接口可访问。";
+  } finally {
+    loadingGraphRegistry.value = false;
+  }
+}
+
+async function loadModelSummary() {
+  loadingModelSummary.value = true;
+  modelError.value = "";
+  try {
+    modelSummary.value = await fetchModelSummary();
+  } catch {
+    modelError.value = "模型状态加载失败，请确认模型接口可访问。";
+  } finally {
+    loadingModelSummary.value = false;
+  }
+}
+
+async function runReviewedGraphRefresh() {
+  refreshingReviewedGraph.value = true;
+  graphError.value = "";
+  graphActionMessage.value = "";
+  try {
+    const payload = await refreshReviewedGraph();
+    graphSummary.value = payload.graph_summary;
+    graphRegistry.value = payload.registry;
+    graphActionMessage.value = `已根据复核记录刷新图谱，当前版本：${payload.registry.active.run_name}`;
+    await loadShowcase();
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      graphError.value = String(error.response?.data?.detail || "复核图谱刷新失败。");
+    } else {
+      graphError.value = "复核图谱刷新失败。";
+    }
+  } finally {
+    refreshingReviewedGraph.value = false;
+  }
+}
+
+async function runGraphActivation(graphId: string) {
+  activatingGraphId.value = graphId;
+  graphError.value = "";
+  graphActionMessage.value = "";
+  try {
+    const payload = await activateGraphVersion(graphId);
+    graphRegistry.value = payload.registry;
+    await Promise.all([loadGraphSummary(), loadShowcase()]);
+    graphActionMessage.value = `已切换当前图谱版本：${payload.record.run_name}`;
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      graphError.value = String(error.response?.data?.detail || "图谱版本切换失败。");
+    } else {
+      graphError.value = "图谱版本切换失败。";
+    }
+  } finally {
+    activatingGraphId.value = "";
+  }
+}
+
 async function loadShowcase() {
   loadingShowcase.value = true;
   showcaseError.value = "";
@@ -96,7 +252,7 @@ async function loadShowcase() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase()]);
+  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase(), loadGraphRegistry(), loadModelSummary()]);
 });
 </script>
 
@@ -114,6 +270,9 @@ onMounted(async () => {
           <button class="ghost-button" type="button" @click="loadGraphSummary" :disabled="loadingGraphSummary">
             {{ loadingGraphSummary ? t("common.refreshing") : t("common.refreshGraphSummary") }}
           </button>
+          <button class="ghost-button" type="button" @click="runReviewedGraphRefresh" :disabled="refreshingReviewedGraph">
+            {{ refreshingReviewedGraph ? "刷新复核图谱中..." : "用复核记录刷新图谱" }}
+          </button>
         </div>
       </div>
 
@@ -123,14 +282,40 @@ onMounted(async () => {
           <strong>文本清洗 → 图谱导入 → 查询展示</strong>
           <p>这一版优先把系统主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
         </div>
+        <div v-if="graphVersion" class="showcase-block">
+          <span>当前图谱版本</span>
+          <strong>{{ graphVersion.run_name }}</strong>
+          <p>{{ formatGraphSource(graphVersion.source_type) }} · 更新时间 {{ formatDateTime(graphVersion.updated_at) }}</p>
+        </div>
       </div>
     </section>
+
+    <p v-if="graphActionMessage" class="status-text">{{ graphActionMessage }}</p>
 
     <section class="stats-grid hero-stats">
       <article v-for="item in heroStats" :key="item.label" class="stat-card">
         <span>{{ item.label }}</span>
         <strong>{{ item.value }}</strong>
       </article>
+    </section>
+
+    <section class="panel showcase-panel">
+      <div class="panel-header compact-header">
+        <div>
+          <p class="panel-kicker">系统状态</p>
+          <h2>当前运行总览</h2>
+        </div>
+      </div>
+
+      <p v-if="modelError" class="status-text error">{{ modelError }}</p>
+      <p v-else-if="loadingModelSummary" class="status-text">正在加载系统状态...</p>
+      <div v-else class="stats-grid hero-stats system-status-grid">
+        <article v-for="item in systemStatusCards" :key="item.label" class="stat-card">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+          <p>{{ item.meta }}</p>
+        </article>
+      </div>
     </section>
 
     <section class="panel showcase-panel">
@@ -260,6 +445,49 @@ onMounted(async () => {
           </div>
         </div>
       </article>
+    </section>
+
+    <section class="panel showcase-panel">
+      <div class="panel-header compact-header">
+        <div>
+          <p class="panel-kicker">图谱版本</p>
+          <h2>图谱版本管理</h2>
+        </div>
+      </div>
+
+      <p v-if="loadingGraphRegistry" class="status-text">正在加载图谱版本...</p>
+      <div v-else class="dataset-split-grid model-registry-grid">
+        <article class="dataset-split-card">
+          <span>当前默认图谱</span>
+          <strong>{{ graphRegistry?.active.run_name || "未记录" }}</strong>
+          <p v-if="graphRegistry?.active">
+            {{ formatGraphSource(graphRegistry.active.source_type) }} · {{ formatGraphMetric(graphRegistry.active) }}
+          </p>
+          <p v-if="graphRegistry?.active">更新时间：{{ formatDateTime(graphRegistry.active.updated_at) }}</p>
+        </article>
+
+        <article class="dataset-split-card">
+          <span>可切换版本</span>
+          <div v-if="graphVersions.length" class="registry-list">
+            <div v-for="record in graphVersions" :key="record.id" class="registry-row">
+              <div>
+                <strong>{{ record.run_name }}</strong>
+                <p>{{ formatGraphSource(record.source_type) }} · {{ formatGraphMetric(record) }}</p>
+                <p>更新时间：{{ formatDateTime(record.updated_at) }}</p>
+              </div>
+              <button
+                class="ghost-button mini-button"
+                type="button"
+                :disabled="record.is_active || activatingGraphId === record.id"
+                @click="runGraphActivation(record.id)"
+              >
+                {{ record.is_active ? "当前默认" : activatingGraphId === record.id ? "切换中..." : "设为默认" }}
+              </button>
+            </div>
+          </div>
+          <p v-else class="status-text">暂无已登记的图谱版本。</p>
+        </article>
+      </div>
     </section>
   </main>
 </template>

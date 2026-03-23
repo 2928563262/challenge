@@ -3,10 +3,17 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.graph.registry import infer_graph_source, register_graph_export
+
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_INPUT = DATA_DIR / "annotation" / "cleaned_silver_corpus.jsonl"
 DEFAULT_OUTPUT_DIR = DATA_DIR / "processed" / "graph"
@@ -38,9 +45,15 @@ def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) 
         writer.writerows(rows)
 
 
-def export_graph(input_path: Path, output_dir: Path) -> dict[str, int]:
-    records = load_jsonl(input_path)
-
+def export_graph_records(
+    records: list[dict[str, object]],
+    output_dir: Path,
+    *,
+    run_name: str | None = None,
+    activate: bool = True,
+    input_path: Path | None = None,
+    source_type: str | None = None,
+) -> dict[str, object]:
     entity_nodes: dict[str, dict[str, object]] = {}
     clause_nodes: list[dict[str, object]] = []
     clause_mentions: list[dict[str, object]] = []
@@ -162,24 +175,53 @@ def export_graph(input_path: Path, output_dir: Path) -> dict[str, int]:
         clause_mentions,
     )
 
-    summary = {
+    stats = {
         "input_record_count": len(records),
         "entity_node_count": len(entity_node_rows),
         "clause_node_count": len(clause_nodes),
         "entity_relation_count": len(entity_relation_rows),
         "clause_mention_count": len(clause_mentions),
     }
-    (output_dir / "graph_export_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output_dir / "graph_export_summary.json").write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+    summary = {
+        "run_name": run_name or output_dir.name,
+        "input_path": str(input_path) if input_path is not None else "",
+        "output_dir": str(output_dir),
+        "source_type": source_type or infer_graph_source(input_path or output_dir),
+        "stats": stats,
+        "created_at": datetime.now(timezone.utc).astimezone().isoformat(),
+    }
+    registry_record = register_graph_export(summary=summary, activate=activate)
+    summary["registry_record"] = registry_record
+    (output_dir / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+def export_graph(input_path: Path, output_dir: Path, run_name: str | None = None, activate: bool = True) -> dict[str, object]:
+    records = load_jsonl(input_path)
+    return export_graph_records(
+        records,
+        output_dir,
+        run_name=run_name,
+        activate=activate,
+        input_path=input_path,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Export cleaned silver corpus to graph CSV files.")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--run-name", type=str, default="")
+    parser.add_argument("--no-activate", action="store_true")
     args = parser.parse_args()
 
-    summary = export_graph(args.input, args.output_dir)
+    summary = export_graph(
+        args.input,
+        args.output_dir,
+        run_name=args.run_name or None,
+        activate=not args.no_activate,
+    )
     print(f"wrote graph CSV files to {args.output_dir}")
     print(json.dumps(summary, ensure_ascii=False))
 

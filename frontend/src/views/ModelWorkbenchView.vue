@@ -4,8 +4,16 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import { formatBioLabel, formatEntityTypeLabel, formatRelationTypeLabel, formatSplitName } from "../i18n";
-import { fetchModelSummary, predictNer, predictRelation, refreshAcceptedPipeline } from "../services/api";
-import type { ArtifactReport, DatasetSplitSummary, ModelSummary, NerPrediction, NerPredictionEntity, RelationPrediction } from "../types/api";
+import { activateModel, fetchModelSummary, predictNer, predictRelation, refreshAcceptedPipeline } from "../services/api";
+import type {
+  ArtifactReport,
+  DatasetSplitSummary,
+  ModelRegistryRecord,
+  ModelSummary,
+  NerPrediction,
+  NerPredictionEntity,
+  RelationPrediction,
+} from "../types/api";
 
 const { t } = useI18n();
 const modelSummary = ref<ModelSummary | null>(null);
@@ -23,6 +31,7 @@ const loadingSummary = ref(false);
 const refreshingPipeline = ref(false);
 const predicting = ref(false);
 const relationPredicting = ref(false);
+const activatingTask = ref<"ner" | "relation" | "">("");
 const summaryError = ref("");
 const predictError = ref("");
 const relationPredictError = ref("");
@@ -31,6 +40,10 @@ const pipelineMessage = ref("");
 const nerSplitEntries = computed(() => Object.entries(modelSummary.value?.ner.dataset_summary ?? {}));
 const relationSplitEntries = computed(() => Object.entries(modelSummary.value?.relation.dataset_summary ?? {}));
 const acceptedPipeline = computed(() => modelSummary.value?.accepted_pipeline ?? null);
+const activeNerModel = computed(() => modelSummary.value?.registry.active.ner ?? null);
+const activeRelationModel = computed(() => modelSummary.value?.registry.active.relation ?? null);
+const nerModelRuns = computed(() => modelSummary.value?.registry.ner ?? []);
+const relationModelRuns = computed(() => modelSummary.value?.registry.relation ?? []);
 
 const entityTypeOptions = [
   { label: formatEntityTypeLabel("SYNDROME"), value: "SYNDROME" },
@@ -43,6 +56,32 @@ const entityTypeOptions = [
 
 function formatBoolean(value: boolean) {
   return value ? "已就绪" : "未就绪";
+}
+
+function formatDateTime(value: string) {
+  if (!value) {
+    return "未记录";
+  }
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatDatasetSource(source: string) {
+  if (source === "merged") {
+    return "合并训练集";
+  }
+  if (source === "incremental") {
+    return "增量数据";
+  }
+  return "基础训练集";
+}
+
+function readPrimaryMetric(record: ModelRegistryRecord) {
+  if (record.task === "ner") {
+    const f1 = record.validation_metrics.eval_f1 ?? record.validation_metrics.f1;
+    return typeof f1 === "number" ? `验证 F1 ${f1.toFixed(4)}` : "验证指标未记录";
+  }
+  const macroF1 = record.validation_metrics.eval_macro_f1 ?? record.validation_metrics.macro_f1;
+  return typeof macroF1 === "number" ? `验证 Macro-F1 ${macroF1.toFixed(4)}` : "验证指标未记录";
 }
 
 function formatUpdatedAt(timestamp: number | null) {
@@ -143,6 +182,25 @@ async function runAcceptedPipelineRefresh() {
     }
   } finally {
     refreshingPipeline.value = false;
+  }
+}
+
+async function runModelActivation(task: "ner" | "relation", modelId: string) {
+  activatingTask.value = task;
+  summaryError.value = "";
+  pipelineMessage.value = "";
+  try {
+    const payload = await activateModel({ task, modelId });
+    await loadModelSummary();
+    pipelineMessage.value = `已切换当前默认${task === "ner" ? "NER" : "RE"}模型：${payload.record.run_name}`;
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      summaryError.value = String(error.response?.data?.detail || "默认模型切换失败。");
+    } else {
+      summaryError.value = "默认模型切换失败。";
+    }
+  } finally {
+    activatingTask.value = "";
   }
 }
 
@@ -312,6 +370,74 @@ onMounted(async () => {
     </section>
 
     <section class="content-grid model-grid secondary-grid">
+      <article class="panel">
+        <div class="panel-header compact-header">
+          <div>
+            <p class="panel-kicker">默认模型</p>
+            <h2>当前生效版本</h2>
+          </div>
+        </div>
+
+        <div class="dataset-split-grid">
+          <article v-if="activeNerModel" class="dataset-split-card">
+            <span>NER 默认模型</span>
+            <strong>{{ activeNerModel.run_name }}</strong>
+            <p>{{ formatDatasetSource(activeNerModel.dataset_source) }} · {{ readPrimaryMetric(activeNerModel) }}</p>
+            <p>更新时间：{{ formatDateTime(activeNerModel.updated_at) }}</p>
+          </article>
+          <article v-if="activeRelationModel" class="dataset-split-card">
+            <span>RE 默认模型</span>
+            <strong>{{ activeRelationModel.run_name }}</strong>
+            <p>{{ formatDatasetSource(activeRelationModel.dataset_source) }} · {{ readPrimaryMetric(activeRelationModel) }}</p>
+            <p>更新时间：{{ formatDateTime(activeRelationModel.updated_at) }}</p>
+          </article>
+        </div>
+
+        <div class="dataset-split-grid model-registry-grid">
+          <article class="dataset-split-card">
+            <span>可选 NER 运行记录</span>
+            <div v-if="nerModelRuns.length" class="registry-list">
+              <div v-for="record in nerModelRuns" :key="record.id" class="registry-row">
+                <div>
+                  <strong>{{ record.run_name }}</strong>
+                  <p>{{ formatDatasetSource(record.dataset_source) }} · {{ readPrimaryMetric(record) }}</p>
+                </div>
+                <button
+                  class="ghost-button mini-button"
+                  type="button"
+                  :disabled="record.is_active || activatingTask === 'ner'"
+                  @click="runModelActivation('ner', record.id)"
+                >
+                  {{ record.is_active ? "当前默认" : activatingTask === "ner" ? "切换中..." : "设为默认" }}
+                </button>
+              </div>
+            </div>
+            <p v-else class="status-text">暂无已注册的 NER 训练记录。</p>
+          </article>
+
+          <article class="dataset-split-card">
+            <span>可选 RE 运行记录</span>
+            <div v-if="relationModelRuns.length" class="registry-list">
+              <div v-for="record in relationModelRuns" :key="record.id" class="registry-row">
+                <div>
+                  <strong>{{ record.run_name }}</strong>
+                  <p>{{ formatDatasetSource(record.dataset_source) }} · {{ readPrimaryMetric(record) }}</p>
+                </div>
+                <button
+                  class="ghost-button mini-button"
+                  type="button"
+                  :disabled="record.is_active || activatingTask === 'relation'"
+                  @click="runModelActivation('relation', record.id)"
+                >
+                  {{ record.is_active ? "当前默认" : activatingTask === "relation" ? "切换中..." : "设为默认" }}
+                </button>
+              </div>
+            </div>
+            <p v-else class="status-text">暂无已注册的 RE 训练记录。</p>
+          </article>
+        </div>
+      </article>
+
       <article class="panel">
         <div class="panel-header compact-header">
           <div>

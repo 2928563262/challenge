@@ -1519,3 +1519,38 @@ button {
 .annotation-filter-group {
   margin-bottom: 14px;
 }
+
+.registry-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.registry-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding-top: 12px;
+  border-top: 1px solid rgba(104, 76, 49, 0.12);
+}
+
+.registry-row:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.registry-row strong {
+  display: block;
+}
+
+.registry-row p {
+  margin: 6px 0 0;
+}
+
+@media (max-width: 1080px) {
+  .registry-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
