@@ -148,7 +148,13 @@ const selectedHeadEntity = computed(() => getPredictedEntityByKey(relationHeadKe
 const selectedTailEntity = computed(() => getPredictedEntityByKey(relationTailKey.value));
 const canRunRelation = computed(() => Boolean(selectedHeadEntity.value && selectedTailEntity.value && relationInputText.value.trim()));
 const batchRelationPairs = computed(() => {
-  const pairs: Array<{ key: string; head: NerPredictionEntity; tail: NerPredictionEntity; priority: number }> = [];
+  const pairs: Array<{
+    key: string;
+    head: NerPredictionEntity;
+    tail: NerPredictionEntity;
+    priority: number;
+    enabled: boolean;
+  }> = [];
   predictedEntities.value.forEach((head, headIndex) => {
     predictedEntities.value.forEach((tail, tailIndex) => {
       if (headIndex === tailIndex) {
@@ -163,6 +169,7 @@ const batchRelationPairs = computed(() => {
         head,
         tail,
         priority: relationPairPriority[pairKey],
+        enabled: true,
       });
     });
   });
@@ -173,7 +180,26 @@ const batchRelationPairs = computed(() => {
     return left.head.start - right.head.start || left.tail.start - right.tail.start;
   });
 });
-const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length && relationInputText.value.trim()));
+const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length > 0 && relationInputText.value.trim()));
+const selectedBatchPairs = ref<Set<string>>(new Set());
+
+function toggleBatchPair(pairKey: string) {
+  const newSet = new Set(selectedBatchPairs.value);
+  if (newSet.has(pairKey)) {
+    newSet.delete(pairKey);
+  } else {
+    newSet.add(pairKey);
+  }
+  selectedBatchPairs.value = newSet;
+}
+
+function selectAllBatchPairs() {
+  selectedBatchPairs.value = new Set(batchRelationPairs.value.map((p) => p.key));
+}
+
+function clearAllBatchPairs() {
+  selectedBatchPairs.value = new Set();
+}
 
 const sessionGraphNodes = computed<SessionGraphNode[]>(() => {
   const entities = predictedEntities.value;
@@ -564,13 +590,14 @@ async function runRelationPrediction() {
   }
 }
 
-async function runBatchRelationPrediction() {
+async function runSelectedBatchRelationPrediction() {
   if (!relationInputText.value.trim()) {
     relationPredictError.value = "请输入关系判断文本。";
     return;
   }
-  if (!batchRelationPairs.value.length) {
-    relationPredictError.value = "当前没有可批量判断的合法实体对。";
+  const selectedPairs = batchRelationPairs.value.filter((p) => selectedBatchPairs.value.has(p.key));
+  if (!selectedPairs.length) {
+    relationPredictError.value = "请至少选择一组实体对。";
     return;
   }
 
@@ -583,7 +610,7 @@ async function runBatchRelationPrediction() {
   let failedCount = 0;
 
   try {
-    for (const pair of batchRelationPairs.value) {
+    for (const pair of selectedPairs) {
       try {
         const prediction = await predictRelation({
           text: relationInputText.value.trim(),
@@ -872,36 +899,49 @@ watch(
         <form class="model-form" @submit.prevent="runRelationPrediction">
           <textarea v-model="relationInputText" rows="4" placeholder="输入或确认当前关系判断用的条文文本。" />
 
-          <p class="status-text">当前可批量判断 {{ batchRelationPairs.length }} 组合法实体对，仅覆盖证候-方剂、证候-症状、方剂-中药、方剂-服法。</p>
-
-          <div class="relation-form-grid">
-            <div class="relation-form-block">
-              <label>头实体</label>
-              <div class="selected-entity-card" :class="{ active: Boolean(selectedHeadEntity) }">
-                <strong>{{ selectedHeadEntity?.text || '未选择' }}</strong>
-                <span>{{ selectedHeadEntity ? formatEntityType(selectedHeadEntity.type) : '请在上方抽取结果中选择' }}</span>
+          <div class="relation-batch-control">
+            <div class="relation-batch-header">
+              <span>可批量判断 {{ batchRelationPairs.length }} 组实体对（仅覆盖核心关系）</span>
+              <div class="batch-actions">
+                <button type="button" class="ghost-button mini-button" @click="selectAllBatchPairs">全选</button>
+                <button type="button" class="ghost-button mini-button" @click="clearAllBatchPairs">清空</button>
               </div>
             </div>
-            <div class="relation-form-block">
-              <label>尾实体</label>
-              <div class="selected-entity-card" :class="{ active: Boolean(selectedTailEntity) }">
-                <strong>{{ selectedTailEntity?.text || '未选择' }}</strong>
-                <span>{{ selectedTailEntity ? formatEntityType(selectedTailEntity.type) : '请在上方抽取结果中选择' }}</span>
+
+            <div class="batch-pair-list">
+              <div
+                v-for="pair in batchRelationPairs"
+                :key="pair.key"
+                class="batch-pair-item"
+                :class="{ selected: selectedBatchPairs.has(pair.key) }"
+                @click="toggleBatchPair(pair.key)"
+              >
+                <span class="pair-check">{{ selectedBatchPairs.has(pair.key) ? '✓' : '○' }}</span>
+                <span class="pair-head">{{ pair.head.text }} ({{ formatEntityType(pair.head.type) }})</span>
+                <span class="pair-arrow">→</span>
+                <span class="pair-tail">{{ pair.tail.text }} ({{ formatEntityType(pair.tail.type) }})</span>
               </div>
             </div>
           </div>
 
           <div class="cta-row compact-cta-row">
-            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">{{ relationPredicting ? '判断中...' : '运行关系判断' }}</button>
-            <button class="ghost-button" type="button" :disabled="relationPredicting || batchRelationPredicting || !canRunBatchRelation" @click="runBatchRelationPrediction">
-              {{ batchRelationPredicting ? "批量判断中..." : "批量关系预测" }}
+            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">
+              {{ relationPredicting ? '判断中...' : '运行关系判断' }}
+            </button>
+            <button
+              class="ghost-button"
+              type="button"
+              :disabled="relationPredicting || batchRelationPredicting || !selectedBatchPairs.size"
+              @click="runSelectedBatchRelationPrediction"
+            >
+              {{ batchRelationPredicting ? "批量判断中..." : `批量执行 (${selectedBatchPairs.size})` }}
             </button>
           </div>
         </form>
 
         <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
         <p v-else-if="relationBatchMessage" class="status-text">{{ relationBatchMessage }}</p>
-        <p v-else class="status-text">当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断“证候-方剂”或“证候-症状”是否成立。</p>
+        <p v-else class="status-text">当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断"证候-方剂"或"证候-症状"是否成立。</p>
       </article>
 
       <article class="panel">

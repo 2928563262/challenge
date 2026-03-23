@@ -21,7 +21,14 @@ const updatingStatus = ref(false);
 const exportingAccepted = ref(false);
 const errorMessage = ref("");
 const actionMessage = ref("");
+
 const statusFilter = ref("all");
+const sourcePageFilter = ref("all");
+const dateFrom = ref("");
+const dateTo = ref("");
+const minNodes = ref<number | null>(null);
+const maxNodes = ref<number | null>(null);
+const searchQuery = ref("");
 
 const statusLabels: Record<string, string> = {
   pending: "待复核",
@@ -37,6 +44,107 @@ const statusOptions = [
   { value: "accepted", label: "已采纳" },
   { value: "rejected", label: "已拒绝" },
 ];
+
+const sourcePageOptions = [
+  { value: "all", label: "全部来源" },
+  { value: "explore", label: "图谱浏览页" },
+  { value: "models", label: "模型工作台" },
+];
+
+const sourcePageLabels: Record<string, string> = {
+  explore: "图谱浏览页",
+  models: "模型工作台",
+};
+
+const filteredRecords = computed(() => {
+  let result = records.value;
+
+  if (searchQuery.value.trim()) {
+    const q = searchQuery.value.toLowerCase();
+    result = result.filter((r) => r.record_id.toLowerCase().includes(q) || r.source_text.toLowerCase().includes(q));
+  }
+
+  if (statusFilter.value !== "all") {
+    result = result.filter((r) => r.status === statusFilter.value);
+  }
+  if (sourcePageFilter.value !== "all") {
+    result = result.filter((r) => r.source_page === sourcePageFilter.value);
+  }
+
+  if (dateFrom.value) {
+    const fromDate = new Date(dateFrom.value);
+    result = result.filter((r) => new Date(r.created_at) >= fromDate);
+  }
+  if (dateTo.value) {
+    const toDate = new Date(dateTo.value);
+    toDate.setHours(23, 59, 59, 999);
+    result = result.filter((r) => new Date(r.created_at) <= toDate);
+  }
+  if (minNodes.value !== null) {
+    result = result.filter((r) => r.node_count >= minNodes.value!);
+  }
+  if (maxNodes.value !== null) {
+    result = result.filter((r) => r.node_count <= maxNodes.value!);
+  }
+
+  return result;
+});
+
+const batchSelected = ref<Set<string>>(new Set());
+const bulkUpdating = ref(false);
+
+function toggleBatchSelect(recordId: string) {
+  const newSet = new Set(batchSelected.value);
+  if (newSet.has(recordId)) {
+    newSet.delete(recordId);
+  } else {
+    newSet.add(recordId);
+  }
+  batchSelected.value = newSet;
+}
+
+function clearBatchSelection() {
+  batchSelected.value = new Set();
+}
+
+function copyRecordId(recordId: string) {
+  navigator.clipboard.writeText(recordId).then(() => {
+    actionMessage.value = "记录ID已复制到剪贴板。";
+  }).catch(() => {
+    actionMessage.value = "复制失败，请手动复制。";
+  });
+}
+
+async function bulkUpdateStatus(status: string) {
+  if (batchSelected.value.size === 0) {
+    actionMessage.value = "请先选择要批量操作的记录。";
+    return;
+  }
+
+  bulkUpdating.value = true;
+  actionMessage.value = "";
+  errorMessage.value = "";
+  let successCount = 0;
+  let failCount = 0;
+
+  try {
+    for (const recordId of batchSelected.value) {
+      try {
+        await updateAnnotationCandidateStatus(recordId, { status });
+        successCount += 1;
+      } catch {
+        failCount += 1;
+      }
+    }
+    await loadList();
+    clearBatchSelection();
+    actionMessage.value = `批量更新完成：成功 ${successCount} 条，失败 ${failCount} 条。`;
+  } catch {
+    errorMessage.value = "批量更新过程中出现错误。";
+  } finally {
+    bulkUpdating.value = false;
+  }
+}
 
 const payloadNodes = computed(() => {
   const payload = selectedRecord.value?.session_payload;
@@ -68,7 +176,8 @@ async function loadList() {
   loadingList.value = true;
   errorMessage.value = "";
   try {
-    const payload = await fetchAnnotationCandidates(30, statusFilter.value === "all" ? undefined : statusFilter.value);
+    const statusParam = statusFilter.value === "all" ? undefined : statusFilter.value;
+    const payload = await fetchAnnotationCandidates(30, statusParam);
     records.value = payload.results;
   } catch {
     errorMessage.value = "候选记录列表加载失败，请检查后端接口。";
@@ -160,10 +269,13 @@ async function exportAcceptedRecords() {
   }
 }
 
-async function applyFilter(status: string) {
+async function applyFilter(status: string, sourcePage?: string) {
   statusFilter.value = status;
+  if (sourcePage !== undefined) {
+    sourcePageFilter.value = sourcePage;
+  }
   await loadList();
-  const nextRecordId = records.value[0]?.record_id || "";
+  const nextRecordId = filteredRecords.value[0]?.record_id || "";
   if (nextRecordId) {
     await loadDetail(nextRecordId, false);
   } else {
@@ -238,36 +350,65 @@ watch(
           </div>
         </div>
 
-        <div class="chip-group annotation-filter-group">
-          <button
-            v-for="option in statusOptions"
-            :key="option.value"
-            type="button"
-            class="filter-chip"
-            :class="{ active: statusFilter === option.value }"
-            @click="applyFilter(option.value)"
-          >
-            {{ option.label }}
-          </button>
+        <div class="annotation-toolbar">
+          <input v-model="searchQuery" type="text" placeholder="搜索记录ID或原文..." class="search-input" />
+          <div class="batch-actions" v-if="batchSelected.size > 0">
+            <span class="batch-count">已选 {{ batchSelected.size }} 条</span>
+            <button class="ghost-button mini-button" @click="clearBatchSelection">清空</button>
+            <button class="ghost-button mini-button" :disabled="bulkUpdating" @click="bulkUpdateStatus('accepted')">批量采纳</button>
+            <button class="ghost-button mini-button" :disabled="bulkUpdating" @click="bulkUpdateStatus('rejected')">批量拒绝</button>
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <div class="chip-group annotation-filter-group">
+            <button
+              v-for="option in statusOptions"
+              :key="option.value"
+              type="button"
+              class="filter-chip"
+              :class="{ active: statusFilter === option.value }"
+              @click="applyFilter(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-row">
+          <div class="date-range">
+            <input v-model="dateFrom" type="date" class="date-input" placeholder="从" />
+            <span>至</span>
+            <input v-model="dateTo" type="date" class="date-input" placeholder="至" />
+          </div>
+          <div class="node-range">
+            <input v-model.number="minNodes" type="number" placeholder="最少节点" class="range-input" min="0" />
+            <span>至</span>
+            <input v-model.number="maxNodes" type="number" placeholder="最多节点" class="range-input" min="0" />
+          </div>
         </div>
 
         <p v-if="errorMessage && !selectedRecord" class="status-text error">{{ errorMessage }}</p>
         <p v-else-if="loadingList" class="status-text">正在加载候选记录...</p>
         <div v-else class="entity-result-list annotation-record-list">
           <button
-            v-for="record in records"
+            v-for="record in filteredRecords"
             :key="record.record_id"
             type="button"
             class="entity-result-card"
-            :class="{ active: selectedRecord?.record_id === record.record_id }"
-            @click="selectRecord(record.record_id)"
+            :class="{ active: selectedRecord?.record_id === record.record_id, selected: batchSelected.has(record.record_id) }"
+            @click="toggleBatchSelect(record.record_id); selectRecord(record.record_id)"
           >
             <div class="entity-result-head">
               <strong>{{ record.record_id }}</strong>
               <span>{{ formatStatus(record.status) }}</span>
             </div>
             <p>{{ record.text_preview }}</p>
-            <p>节点 {{ record.node_count }} · 关系 {{ record.edge_count }}</p>
+            <div class="record-meta">
+              <span>节点 {{ record.node_count }}</span>
+              <span>关系 {{ record.edge_count }}</span>
+              <span>{{ record.source_page === 'explore' ? '浏览页' : '工作台' }}</span>
+            </div>
           </button>
         </div>
       </article>
@@ -278,6 +419,9 @@ watch(
             <p class="panel-kicker">Review Detail</p>
             <h2>记录详情</h2>
           </div>
+          <div v-if="selectedRecord?.status === 'accepted'" class="accepted-badge">
+            <span>✓ 已采纳</span>
+          </div>
         </div>
 
         <p v-if="errorMessage && selectedRecord" class="status-text error">{{ errorMessage }}</p>
@@ -286,7 +430,7 @@ watch(
         <p v-else-if="!selectedRecord" class="status-text">先从左侧选择一条候选记录。</p>
 
         <template v-else>
-          <div class="entity-focus-card annotation-summary-card">
+          <div class="entity-focus-card annotation-summary-card" :class="selectedRecord.status">
             <div>
               <p class="entity-type-tag">{{ formatStatus(selectedRecord.status) }}</p>
               <h3>{{ selectedRecord.record_id }}</h3>
@@ -299,6 +443,11 @@ watch(
             </div>
           </div>
 
+          <div v-if="selectedRecord.status === 'accepted'" class="accepted-actions">
+            <button class="ghost-button mini-button" @click="exportAcceptedRecords">导出已采纳记录（JSON）</button>
+            <button class="ghost-button mini-button" @click="copyRecordId(selectedRecord.record_id)">复制记录ID</button>
+          </div>
+
           <div class="chip-group annotation-status-group">
             <button
               v-for="option in statusOptions.filter((item) => item.value !== 'all')"
@@ -306,7 +455,7 @@ watch(
               type="button"
               class="filter-chip"
               :class="{ active: selectedRecord.status === option.value }"
-              :disabled="updatingStatus"
+              :disabled="updatingStatus || selectedRecord.status === option.value"
               @click="updateStatus(option.value)"
             >
               {{ updatingStatus && selectedRecord.status !== option.value ? "处理中..." : option.label }}
