@@ -93,9 +93,9 @@ export async function saveAnnotationCandidate(payload: AnnotationCandidatePayloa
   return response.data;
 }
 
-export async function fetchAnnotationCandidates(limit = 20, status?: string) {
+export async function fetchAnnotationCandidates(limit = 20, status?: string, sourcePage?: string) {
   const response = await apiClient.get<AnnotationCandidateListResponse>("/annotation/candidates/", {
-    params: { limit, status: status || undefined },
+    params: { limit, status: status || undefined, source_page: sourcePage || undefined },
   });
   return response.data;
 }

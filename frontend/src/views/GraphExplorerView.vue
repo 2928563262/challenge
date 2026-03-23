@@ -182,6 +182,7 @@ const batchRelationPairs = computed(() => {
 });
 const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length > 0 && relationInputText.value.trim()));
 const selectedBatchPairs = ref<Set<string>>(new Set());
+const selectedBatchCount = computed(() => selectedBatchPairs.value.size);
 
 function toggleBatchPair(pairKey: string) {
   const newSet = new Set(selectedBatchPairs.value);

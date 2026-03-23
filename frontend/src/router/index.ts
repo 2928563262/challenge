@@ -4,6 +4,7 @@ import AnnotationReviewView from "../views/AnnotationReviewView.vue";
 import GraphExplorerView from "../views/GraphExplorerView.vue";
 import HomeView from "../views/HomeView.vue";
 import ModelWorkbenchView from "../views/ModelWorkbenchView.vue";
+import StatisticsView from "../views/StatisticsView.vue";
 // import QAPageView from "../views/QAPageView.vue"; // Temporarily disabled due to missing QA types
 
 const router = createRouter({
@@ -28,6 +29,11 @@ const router = createRouter({
       path: "/annotations",
       name: "annotations",
       component: AnnotationReviewView,
+    },
+    {
+      path: "/stats",
+      name: "stats",
+      component: StatisticsView,
     },
     // {
     //   path: "/qa",

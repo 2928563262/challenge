@@ -10,6 +10,7 @@
         <nav class="main-nav">
           <RouterLink to="/" class="nav-link">总览</RouterLink>
           <RouterLink to="/explore" class="nav-link">图谱浏览</RouterLink>
+          <RouterLink to="/stats" class="nav-link">统计图表</RouterLink>
           <RouterLink to="/models" class="nav-link">模型工作台</RouterLink>
           <RouterLink to="/annotations" class="nav-link">候选复核</RouterLink>
         </nav>

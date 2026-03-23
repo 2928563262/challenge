@@ -35,6 +35,7 @@ class AnnotationCandidateListCreateView(APIView):
     def get(self, request):
         raw_limit = request.query_params.get("limit") or str(DEFAULT_LIST_LIMIT)
         status_filter = str(request.query_params.get("status") or "").strip()
+        source_page_filter = str(request.query_params.get("source_page") or "").strip()
         try:
             limit = max(1, min(int(raw_limit), MAX_LIST_LIMIT))
         except ValueError:
@@ -48,6 +49,8 @@ class AnnotationCandidateListCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             queryset = queryset.filter(status=status_filter)
+        if source_page_filter:
+            queryset = queryset.filter(source_page=source_page_filter)
 
         total = queryset.count()
         queryset = queryset[:limit]

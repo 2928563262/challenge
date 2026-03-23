@@ -93,6 +93,14 @@ const filteredRecords = computed(() => {
 const batchSelected = ref<Set<string>>(new Set());
 const bulkUpdating = ref(false);
 
+const filteredSummary = computed(() => {
+  const counts: Record<string, number> = { pending: 0, reviewed: 0, accepted: 0, rejected: 0 };
+  filteredRecords.value.forEach((r) => {
+    if (r.status in counts) counts[r.status] += 1;
+  });
+  return counts;
+});
+
 function toggleBatchSelect(recordId: string) {
   const newSet = new Set(batchSelected.value);
   if (newSet.has(recordId)) {
@@ -376,6 +384,21 @@ watch(
         </div>
 
         <div class="filter-row">
+          <div class="chip-group annotation-filter-group">
+            <button
+              v-for="option in sourcePageOptions"
+              :key="option.value"
+              type="button"
+              class="filter-chip"
+              :class="{ active: sourcePageFilter === option.value }"
+              @click="applyFilter(statusFilter, option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-row">
           <div class="date-range">
             <input v-model="dateFrom" type="date" class="date-input" placeholder="从" />
             <span>至</span>
@@ -386,6 +409,14 @@ watch(
             <span>至</span>
             <input v-model.number="maxNodes" type="number" placeholder="最多节点" class="range-input" min="0" />
           </div>
+        </div>
+
+        <div v-if="filteredRecords.length" class="filter-summary">
+          <span>显示: </span>
+          <span class="summary-chip pending">{{ filteredSummary.pending }} 待复核</span>
+          <span class="summary-chip reviewed">{{ filteredSummary.reviewed }} 已复核</span>
+          <span class="summary-chip accepted">{{ filteredSummary.accepted }} 已采纳</span>
+          <span class="summary-chip rejected">{{ filteredSummary.rejected }} 已拒绝</span>
         </div>
 
         <p v-if="errorMessage && !selectedRecord" class="status-text error">{{ errorMessage }}</p>
