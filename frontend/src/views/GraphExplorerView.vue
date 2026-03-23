@@ -80,6 +80,10 @@ const searchResults = ref<GraphEntity[]>([]);
 const searchTotal = ref(0);
 const corpusResults = ref<CorpusEntry[]>([]);
 const corpusTotal = ref(0);
+const manualEntityText = ref("");
+const manualEntityType = ref("SYMPTOM");
+const manualEntityStart = ref("");
+const manualEntityError = ref("");
 
 const entityTypeOptions = [
   { label: "方剂", value: "FORMULA" },
@@ -332,8 +336,160 @@ function getPredictedMatches(entity: NerPredictionEntity) {
   return predictedGraphMatches.value[predictedEntityKey(entity)] ?? [];
 }
 
+async function resolveSinglePredictedEntityToGraph(entity: NerPredictionEntity) {
+  const key = predictedEntityKey(entity);
+  try {
+    const payload = await searchGraphEntities({ keyword: entity.text, entityType: entity.type, limit: 3 });
+    predictedGraphMatches.value = {
+      ...predictedGraphMatches.value,
+      [key]: payload.results,
+    };
+  } catch {
+    predictedGraphMatches.value = {
+      ...predictedGraphMatches.value,
+      [key]: [],
+    };
+  }
+}
+
 function entityPreviewText(entity: NerPredictionEntity) {
   return `${entity.text} · ${formatEntityType(entity.type)} · ${entity.start}-${entity.end}`;
+}
+
+function resetManualEntityForm() {
+  manualEntityText.value = "";
+  manualEntityType.value = "SYMPTOM";
+  manualEntityStart.value = "";
+  manualEntityError.value = "";
+}
+
+function findAllEntityPositions(text: string, needle: string) {
+  const positions: number[] = [];
+  let fromIndex = 0;
+  while (fromIndex < text.length) {
+    const foundIndex = text.indexOf(needle, fromIndex);
+    if (foundIndex === -1) {
+      break;
+    }
+    positions.push(foundIndex);
+    fromIndex = foundIndex + 1;
+  }
+  return positions;
+}
+
+async function addManualEntity() {
+  manualEntityError.value = "";
+  exportMessage.value = "";
+
+  if (!nerPrediction.value) {
+    manualEntityError.value = "请先运行一次 NER 抽取，再补充缺失实体。";
+    return;
+  }
+
+  const text = manualEntityText.value.trim();
+  if (!text) {
+    manualEntityError.value = "请输入要补充的实体文本。";
+    return;
+  }
+
+  const sourceText = nerPrediction.value.text;
+  let start: number | null = null;
+
+  if (manualEntityStart.value.trim()) {
+    const parsed = Number.parseInt(manualEntityStart.value.trim(), 10);
+    if (Number.isNaN(parsed) || parsed < 0) {
+      manualEntityError.value = "起始位置必须是大于等于 0 的整数。";
+      return;
+    }
+    start = parsed;
+  } else {
+    const positions = findAllEntityPositions(sourceText, text);
+    if (!positions.length) {
+      manualEntityError.value = "当前条文中没有找到这段文本，请检查输入。";
+      return;
+    }
+    if (positions.length > 1) {
+      manualEntityError.value = `当前条文中“${text}”出现了 ${positions.length} 次，请补充起始位置。`;
+      return;
+    }
+    start = positions[0];
+  }
+
+  const end = start + text.length;
+  if (sourceText.slice(start, end) !== text) {
+    manualEntityError.value = "起始位置与实体文本不匹配，请重新检查。";
+    return;
+  }
+
+  const entity: NerPredictionEntity = {
+    text,
+    type: manualEntityType.value,
+    start,
+    end,
+  };
+  const entityKey = predictedEntityKey(entity);
+  const duplicate = predictedEntities.value.some((item) => predictedEntityKey(item) === entityKey);
+  if (duplicate) {
+    manualEntityError.value = "相同位置和类型的实体已经存在，无需重复新增。";
+    return;
+  }
+
+  nerPrediction.value = {
+    ...nerPrediction.value,
+    entities: [...predictedEntities.value, entity].sort((left, right) => left.start - right.start || left.end - right.end),
+  };
+
+  await resolveSinglePredictedEntityToGraph(entity);
+
+  if (!relationHeadKey.value) {
+    relationHeadKey.value = entityKey;
+  } else if (!relationTailKey.value && relationHeadKey.value !== entityKey) {
+    relationTailKey.value = entityKey;
+  }
+
+  exportMessage.value = `已新增实体“${text}”，可继续映射图谱、批量关系预测或提交候选记录。`;
+  resetManualEntityForm();
+}
+
+function removePredictedEntity(target: NerPredictionEntity) {
+  if (!nerPrediction.value) {
+    return;
+  }
+
+  const targetKey = predictedEntityKey(target);
+  const nextEntities = predictedEntities.value.filter((entity) => predictedEntityKey(entity) !== targetKey);
+  nerPrediction.value = {
+    ...nerPrediction.value,
+    entities: nextEntities,
+  };
+
+  const nextMatches = { ...predictedGraphMatches.value };
+  delete nextMatches[targetKey];
+  predictedGraphMatches.value = nextMatches;
+
+  relationHistory.value = relationHistory.value.filter((item) => {
+    const headKey = predictedEntityKey(item.head);
+    const tailKey = predictedEntityKey(item.tail);
+    return headKey !== targetKey && tailKey !== targetKey;
+  });
+
+  if (
+    relationPrediction.value &&
+    (predictedEntityKey(relationPrediction.value.head) === targetKey || predictedEntityKey(relationPrediction.value.tail) === targetKey)
+  ) {
+    relationPrediction.value = null;
+  }
+
+  if (relationHeadKey.value === targetKey) {
+    relationHeadKey.value = "";
+  }
+  if (relationTailKey.value === targetKey) {
+    relationTailKey.value = "";
+  }
+
+  relationBatchMessage.value = "";
+  relationPredictError.value = "";
+  exportMessage.value = `已删除实体“${target.text}”，相关临时关系已同步清理。`;
 }
 
 function graphCandidateSummary(candidate: GraphEntity) {
@@ -513,6 +669,7 @@ async function runNerPrediction() {
   try {
     const prediction = await predictNer(text);
     nerPrediction.value = prediction;
+    resetManualEntityForm();
     autoSelectRelationPair(prediction.entities);
     await resolvePredictedEntitiesToGraph(prediction);
   } catch (error: unknown) {
@@ -823,6 +980,23 @@ watch(
             </div>
           </div>
 
+          <div class="manual-entity-panel">
+            <div class="manual-entity-header">
+              <strong>手动补充实体</strong>
+              <span>当模型漏掉实体时，可直接补录到本次会话中。</span>
+            </div>
+            <div class="manual-entity-grid">
+              <input v-model="manualEntityText" type="text" placeholder="实体文本，例如：头痛" />
+              <select v-model="manualEntityType">
+                <option v-for="option in entityTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+              <input v-model="manualEntityStart" type="text" inputmode="numeric" placeholder="起始位置，可选" />
+              <button class="ghost-button" type="button" @click="addManualEntity">新增实体</button>
+            </div>
+            <p v-if="manualEntityError" class="status-text error">{{ manualEntityError }}</p>
+            <p v-else class="status-text">若实体在条文中只出现一次，可只填文本和类型；若重复出现，请补起始位置。</p>
+          </div>
+
           <p v-if="resolvingPredictedEntities" class="status-text">正在把抽取结果映射到图谱节点...</p>
 
           <div class="entity-chip-list explorer-entity-chip-list">
@@ -853,6 +1027,7 @@ watch(
                 <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">设为尾实体</button>
                 <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">设为检索词</button>
                 <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">打开最佳映射</button>
+                <button class="ghost-button mini-button danger-button" type="button" @click="removePredictedEntity(entity)">删除实体</button>
               </div>
             </div>
           </div>
