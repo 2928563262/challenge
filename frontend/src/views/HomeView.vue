@@ -1,11 +1,14 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
+import { formatEntityTypeLabel } from "../i18n";
 import { fetchGraphShowcase, fetchGraphSummary, fetchOverview } from "../services/api";
 import type { CorpusOverview, GraphEntity, GraphShowcaseCase, GraphSummary } from "../types/api";
 
 const router = useRouter();
+const { t } = useI18n();
 
 const overview = ref<CorpusOverview | null>(null);
 const graphSummary = ref<GraphSummary | null>(null);
@@ -18,15 +21,6 @@ const loadingShowcase = ref(false);
 const overviewError = ref("");
 const graphError = ref("");
 const showcaseError = ref("");
-
-const entityTypeLabels: Record<string, string> = {
-  FORMULA: "方剂",
-  SYNDROME: "证候",
-  SYMPTOM: "症状",
-  HERB: "中药",
-  THERAPY: "治法",
-  ADMINISTRATION: "服法",
-};
 
 const heroStats = computed(() => {
   if (!graphSummary.value || !overview.value) {
@@ -46,7 +40,7 @@ const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
 
 function formatEntityType(entityTypeName: string) {
-  return entityTypeLabels[entityTypeName] || entityTypeName;
+  return formatEntityTypeLabel(entityTypeName);
 }
 
 function openExplorer(entity: GraphEntity) {
@@ -110,7 +104,7 @@ onMounted(async () => {
   <main class="page-shell knowledge-page home-dashboard">
     <section class="hero-panel hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Knowledge Graph MVP</p>
+        <p class="eyebrow">{{ t("home.heroKicker") }}</p>
         <h1>围绕《伤寒论》做一个可检索、可建图、可展示、可答辩的最小闭环系统。</h1>
         <p class="hero-description">
           首页负责给出项目全貌、核心统计和典型案例入口；图谱浏览页负责实体检索、关系网络概览和原文证据回溯。
@@ -118,7 +112,7 @@ onMounted(async () => {
         <div class="cta-row">
           <RouterLink to="/explore" class="primary-link-button">进入图谱浏览</RouterLink>
           <button class="ghost-button" type="button" @click="loadGraphSummary" :disabled="loadingGraphSummary">
-            {{ loadingGraphSummary ? "刷新中..." : "刷新图谱摘要" }}
+            {{ loadingGraphSummary ? t("common.refreshing") : t("common.refreshGraphSummary") }}
           </button>
         </div>
       </div>
@@ -127,7 +121,7 @@ onMounted(async () => {
         <div class="showcase-block">
           <span>当前主线</span>
           <strong>文本清洗 → 图谱导入 → 查询展示</strong>
-          <p>这一版优先把 Demo 和答辩所需的主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
+          <p>这一版优先把系统主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
         </div>
       </div>
     </section>
@@ -142,7 +136,7 @@ onMounted(async () => {
     <section class="panel showcase-panel">
       <div class="panel-header compact-header">
         <div>
-          <p class="panel-kicker">Case Showcase</p>
+          <p class="panel-kicker">{{ t("home.showcaseKicker") }}</p>
           <h2>典型案例入口</h2>
         </div>
         <RouterLink to="/explore" class="ghost-link">查看全部图谱细节</RouterLink>
@@ -179,7 +173,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Graph Snapshot</p>
+            <p class="panel-kicker">{{ t("home.snapshotKicker") }}</p>
             <h2>图谱类型分布</h2>
           </div>
         </div>
@@ -196,7 +190,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Top Entities</p>
+            <p class="panel-kicker">{{ t("home.topEntitiesKicker") }}</p>
             <h2>高频知识节点</h2>
           </div>
         </div>
@@ -221,7 +215,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Formula Preview</p>
+            <p class="panel-kicker">{{ t("home.formulaPreviewKicker") }}</p>
             <h2>方剂相关条文样本</h2>
           </div>
         </div>
@@ -242,7 +236,7 @@ onMounted(async () => {
       <article class="panel narrative-panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Project Focus</p>
+            <p class="panel-kicker">{{ t("home.focusKicker") }}</p>
             <h2>当前系统能做什么</h2>
           </div>
         </div>
@@ -261,8 +255,8 @@ onMounted(async () => {
             <p>所有实体都能回到条文片段，避免图谱展示脱离原文来源。</p>
           </div>
           <div class="narrative-item">
-            <strong>典型案例答辩</strong>
-            <p>固定案例卡片可以直接作为比赛和课堂演示入口，减少临场检索风险。</p>
+            <strong>候选复核闭环</strong>
+            <p>抽取结果可以提交为候选记录，经过复核后继续回流到训练数据。</p>
           </div>
         </div>
       </article>

@@ -1,10 +1,13 @@
 ﻿<script setup lang="ts">
 import axios from "axios";
 import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 
-import { fetchModelSummary, predictNer, predictRelation } from "../services/api";
-import type { DatasetSplitSummary, ModelSummary, NerPrediction, NerPredictionEntity, RelationPrediction } from "../types/api";
+import { formatBioLabel, formatEntityTypeLabel, formatRelationTypeLabel, formatSplitName } from "../i18n";
+import { fetchModelSummary, predictNer, predictRelation, refreshAcceptedPipeline } from "../services/api";
+import type { ArtifactReport, DatasetSplitSummary, ModelSummary, NerPrediction, NerPredictionEntity, RelationPrediction } from "../types/api";
 
+const { t } = useI18n();
 const modelSummary = ref<ModelSummary | null>(null);
 const prediction = ref<NerPrediction | null>(null);
 const relationPrediction = ref<RelationPrediction | null>(null);
@@ -17,39 +20,55 @@ const relationTailText = ref("桂枝汤");
 const relationTailType = ref("FORMULA");
 
 const loadingSummary = ref(false);
+const refreshingPipeline = ref(false);
 const predicting = ref(false);
 const relationPredicting = ref(false);
 const summaryError = ref("");
 const predictError = ref("");
 const relationPredictError = ref("");
+const pipelineMessage = ref("");
 
 const nerSplitEntries = computed(() => Object.entries(modelSummary.value?.ner.dataset_summary ?? {}));
 const relationSplitEntries = computed(() => Object.entries(modelSummary.value?.relation.dataset_summary ?? {}));
-
-const entityTypeLabels: Record<string, string> = {
-  SYNDROME: "证候",
-  SYMPTOM: "症状",
-  FORMULA: "方剂",
-  HERB: "中药",
-  THERAPY: "治法",
-  ADMINISTRATION: "服法",
-};
+const acceptedPipeline = computed(() => modelSummary.value?.accepted_pipeline ?? null);
 
 const entityTypeOptions = [
-  { label: "证候", value: "SYNDROME" },
-  { label: "症状", value: "SYMPTOM" },
-  { label: "方剂", value: "FORMULA" },
-  { label: "中药", value: "HERB" },
-  { label: "治法", value: "THERAPY" },
-  { label: "服法", value: "ADMINISTRATION" },
+  { label: formatEntityTypeLabel("SYNDROME"), value: "SYNDROME" },
+  { label: formatEntityTypeLabel("SYMPTOM"), value: "SYMPTOM" },
+  { label: formatEntityTypeLabel("FORMULA"), value: "FORMULA" },
+  { label: formatEntityTypeLabel("HERB"), value: "HERB" },
+  { label: formatEntityTypeLabel("THERAPY"), value: "THERAPY" },
+  { label: formatEntityTypeLabel("ADMINISTRATION"), value: "ADMINISTRATION" },
 ];
 
 function formatBoolean(value: boolean) {
   return value ? "已就绪" : "未就绪";
 }
 
+function formatUpdatedAt(timestamp: number | null) {
+  if (!timestamp) {
+    return "未生成";
+  }
+  return new Date(timestamp * 1000).toLocaleString("zh-CN", { hour12: false });
+}
+
+function readReportValue(report: ArtifactReport | null | undefined, path: string[]) {
+  const payload = report?.data;
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  let current: unknown = payload;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || !(key in current)) {
+      return null;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
 function formatEntityType(entityTypeName: string) {
-  return entityTypeLabels[entityTypeName] || entityTypeName;
+  return formatEntityTypeLabel(entityTypeName);
 }
 
 function summarizeSplit(split: DatasetSplitSummary) {
@@ -96,6 +115,34 @@ async function loadModelSummary() {
     summaryError.value = "模型摘要加载失败，请确认 Django 服务已经启动。";
   } finally {
     loadingSummary.value = false;
+  }
+}
+
+async function runAcceptedPipelineRefresh() {
+  refreshingPipeline.value = true;
+  summaryError.value = "";
+  pipelineMessage.value = "";
+  try {
+    const payload = await refreshAcceptedPipeline();
+    if (modelSummary.value) {
+      modelSummary.value = {
+        ...modelSummary.value,
+        accepted_pipeline: payload.status,
+      };
+    } else {
+      await loadModelSummary();
+    }
+    const recordCount = Number((payload.export_report as Record<string, any>)?.stats?.record_count ?? 0);
+    const addedCount = Number((payload.merge_report as Record<string, any>)?.stats?.ner?.added_count ?? 0);
+    pipelineMessage.value = `已完成已采纳数据回流：导出 ${recordCount} 条记录，NER 合并训练集新增 ${addedCount} 条样本。`;
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      summaryError.value = String(error.response?.data?.detail || "accepted 数据回流失败。");
+    } else {
+      summaryError.value = "accepted 数据回流失败。";
+    }
+  } finally {
+    refreshingPipeline.value = false;
   }
 }
 
@@ -172,7 +219,7 @@ onMounted(async () => {
     <section class="panel explorer-hero">
       <div class="panel-header explorer-header">
         <div>
-          <p class="panel-kicker">Model Layer</p>
+          <p class="panel-kicker">{{ t("models.heroKicker") }}</p>
           <h1>模型工作台</h1>
           <p class="hero-description explorer-description">
             这一页只关心模型层：查看 NER 与关系基线的数据准备、检查点和依赖状态，并直接在前端发起 NER / RE 预测。
@@ -180,20 +227,21 @@ onMounted(async () => {
         </div>
         <div class="explorer-actions model-actions">
           <button class="ghost-button" type="button" @click="loadModelSummary" :disabled="loadingSummary">
-            {{ loadingSummary ? "刷新中..." : "刷新模型摘要" }}
+            {{ loadingSummary ? t("common.refreshing") : t("common.refreshModelSummary") }}
           </button>
-          <RouterLink to="/explore" class="ghost-link">回到图谱浏览</RouterLink>
+          <RouterLink to="/explore" class="ghost-link">{{ t("common.backToExplorer") }}</RouterLink>
         </div>
       </div>
     </section>
 
     <p v-if="summaryError" class="status-text error">{{ summaryError }}</p>
+    <p v-else-if="pipelineMessage" class="status-text">{{ pipelineMessage }}</p>
 
     <section class="content-grid model-grid">
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">NER Baseline</p>
+            <p class="panel-kicker">{{ t("models.nerBaselineKicker") }}</p>
             <h2>命名实体识别状态</h2>
           </div>
         </div>
@@ -212,12 +260,12 @@ onMounted(async () => {
 
         <div v-if="modelSummary?.ner.label_list.length" class="muted-list">
           <strong>标签空间</strong>
-          <p>{{ modelSummary.ner.label_list.join(" / ") }}</p>
+          <p>{{ modelSummary.ner.label_list.map((label) => formatBioLabel(label)).join(" / ") }}</p>
         </div>
 
         <div class="dataset-split-grid">
           <article v-for="([name, split]) in nerSplitEntries" :key="name" class="dataset-split-card">
-            <span>{{ name }}</span>
+            <span>{{ formatSplitName(name) }}</span>
             <strong>{{ summarizeSplit(split) }}</strong>
             <p v-if="labelEntries(split.entity_count_by_type).length">
               {{ labelEntries(split.entity_count_by_type).map(([key, value]) => `${formatEntityType(key)} ${value}`).join(" · ") }}
@@ -229,7 +277,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Relation Baseline</p>
+            <p class="panel-kicker">{{ t("models.relationBaselineKicker") }}</p>
             <h2>关系抽取状态</h2>
           </div>
         </div>
@@ -248,15 +296,15 @@ onMounted(async () => {
 
         <div v-if="modelSummary?.relation.label_list.length" class="muted-list">
           <strong>关系标签</strong>
-          <p>{{ modelSummary.relation.label_list.join(" / ") }}</p>
+          <p>{{ modelSummary.relation.label_list.map((label) => formatRelationTypeLabel(label)).join(" / ") }}</p>
         </div>
 
         <div class="dataset-split-grid">
           <article v-for="([name, split]) in relationSplitEntries" :key="name" class="dataset-split-card">
-            <span>{{ name }}</span>
+            <span>{{ formatSplitName(name) }}</span>
             <strong>{{ summarizeSplit(split) }}</strong>
             <p v-if="labelEntries(split.label_count_by_type).length">
-              {{ labelEntries(split.label_count_by_type).map(([key, value]) => `${key} ${value}`).join(" · ") }}
+              {{ labelEntries(split.label_count_by_type).map(([key, value]) => `${formatRelationTypeLabel(key)} ${value}`).join(" · ") }}
             </p>
           </article>
         </div>
@@ -267,7 +315,44 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Online Inference</p>
+            <p class="panel-kicker">{{ t("models.acceptedLoopKicker") }}</p>
+            <h2>已采纳数据回流</h2>
+          </div>
+          <button class="primary-button" type="button" :disabled="refreshingPipeline" @click="runAcceptedPipelineRefresh">
+            {{ refreshingPipeline ? t("models.acceptedRefreshing") : t("models.acceptedRefresh") }}
+          </button>
+        </div>
+
+        <div v-if="acceptedPipeline" class="dataset-split-grid">
+          <article class="dataset-split-card">
+            <span>已采纳导出</span>
+            <strong>{{ readReportValue(acceptedPipeline.accepted_report, ["stats", "record_count"]) ?? 0 }} 条记录</strong>
+            <p>更新时间：{{ formatUpdatedAt(acceptedPipeline.accepted_report.updated_at) }}</p>
+          </article>
+          <article class="dataset-split-card">
+            <span>增量 NER/RE</span>
+            <strong>
+              NER {{ readReportValue(acceptedPipeline.incremental_report, ["stats", "ner", "record_count"]) ?? 0 }}
+              · RE {{ readReportValue(acceptedPipeline.incremental_report, ["stats", "relation", "example_count"]) ?? 0 }}
+            </strong>
+            <p>更新时间：{{ formatUpdatedAt(acceptedPipeline.incremental_report.updated_at) }}</p>
+          </article>
+          <article class="dataset-split-card">
+            <span>merged 训练集</span>
+            <strong>
+              NER +{{ readReportValue(acceptedPipeline.merge_report, ["stats", "ner", "added_count"]) ?? 0 }}
+              · RE +{{ readReportValue(acceptedPipeline.merge_report, ["stats", "relation", "added_count"]) ?? 0 }}
+            </strong>
+            <p>更新时间：{{ formatUpdatedAt(acceptedPipeline.merge_report.updated_at) }}</p>
+          </article>
+        </div>
+
+      </article>
+
+      <article class="panel">
+        <div class="panel-header compact-header">
+          <div>
+            <p class="panel-kicker">{{ t("models.inferenceKicker") }}</p>
             <h2>NER 在线预测</h2>
           </div>
         </div>
@@ -306,7 +391,7 @@ onMounted(async () => {
           <div class="token-grid">
             <div v-for="(token, index) in prediction.tokens" :key="`${token}-${index}`" class="token-chip">
               <strong>{{ token }}</strong>
-              <span>{{ prediction.labels[index] }}</span>
+              <span>{{ formatBioLabel(prediction.labels[index]) }}</span>
             </div>
           </div>
         </template>
@@ -315,7 +400,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Relation Inference</p>
+            <p class="panel-kicker">{{ t("models.relationInferenceKicker") }}</p>
             <h2>关系预测</h2>
           </div>
         </div>
@@ -361,7 +446,7 @@ onMounted(async () => {
 
         <template v-else>
           <div class="relation-result-card">
-            <div class="breakdown-item"><span>预测标签</span><strong>{{ relationPrediction.label }}</strong></div>
+            <div class="breakdown-item"><span>预测标签</span><strong>{{ formatRelationTypeLabel(relationPrediction.label) }}</strong></div>
             <div class="breakdown-item"><span>置信度</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
             <div class="breakdown-item"><span>头实体</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
             <div class="breakdown-item"><span>尾实体</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
@@ -369,7 +454,7 @@ onMounted(async () => {
 
           <div class="dataset-split-grid relation-score-grid">
             <article v-for="item in relationPrediction.top_predictions" :key="item.label" class="dataset-split-card">
-              <span>{{ item.label }}</span>
+              <span>{{ formatRelationTypeLabel(item.label) }}</span>
               <strong>{{ item.score.toFixed(4) }}</strong>
             </article>
           </div>
@@ -377,62 +462,5 @@ onMounted(async () => {
       </article>
     </section>
 
-    <section class="content-grid model-grid secondary-grid">
-      <article class="panel">
-        <div class="panel-header compact-header">
-          <div>
-            <p class="panel-kicker">Runbook</p>
-            <h2>当前模型链路</h2>
-          </div>
-        </div>
-
-        <div class="narrative-list">
-          <div class="narrative-item">
-            <strong>1. NER 数据准备</strong>
-            <p>{{ modelSummary?.ner.commands.prepare_ner_dataset || "python scripts/prepare_ner_dataset.py" }}</p>
-          </div>
-          <div class="narrative-item">
-            <strong>2. NER 基线训练</strong>
-            <p>{{ modelSummary?.ner.commands.train_ner_baseline || "python scripts/train_ner_baseline.py" }}</p>
-          </div>
-          <div class="narrative-item">
-            <strong>3. RE 数据准备</strong>
-            <p>{{ modelSummary?.relation.commands.prepare_relation_dataset || "python scripts/prepare_relation_dataset.py" }}</p>
-          </div>
-          <div class="narrative-item">
-            <strong>4. RE 基线训练</strong>
-            <p>{{ modelSummary?.relation.commands.train_relation_baseline || "python scripts/train_relation_baseline.py" }}</p>
-          </div>
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-header compact-header">
-          <div>
-            <p class="panel-kicker">Artifact Layout</p>
-            <h2>训练产物约定</h2>
-          </div>
-        </div>
-
-        <div class="narrative-list">
-          <div class="narrative-item">
-            <strong>NER 检查点目录</strong>
-            <p>`models/baseline/ner/guwenbert-ner-baseline/best`</p>
-          </div>
-          <div class="narrative-item">
-            <strong>RE 检查点目录</strong>
-            <p>`models/baseline/relation/guwenbert-relation-baseline/best`</p>
-          </div>
-          <div class="narrative-item">
-            <strong>实验结果目录</strong>
-            <p>`experiments/ner` 与 `experiments/relation`</p>
-          </div>
-          <div class="narrative-item">
-            <strong>系统读取方式</strong>
-            <p>当前 Django 接口会自动读取上述默认目录，也支持通过环境变量覆盖。</p>
-          </div>
-        </div>
-      </article>
-    </section>
   </main>
 </template>

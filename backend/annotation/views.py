@@ -105,16 +105,40 @@ class AnnotationCandidateDetailView(APIView):
             return Response({"detail": "candidate not found."}, status=status.HTTP_404_NOT_FOUND)
 
         status_value = request.data.get("status")
-        if status_value is None:
-            return Response({"detail": "status is required."}, status=status.HTTP_400_BAD_REQUEST)
+        source_text = request.data.get("source_text")
+        session_payload = request.data.get("session_payload")
 
-        normalized_status = str(status_value).strip()
-        if normalized_status not in VALID_STATUSES:
+        update_fields = {"updated_at"}
+        if status_value is None and source_text is None and session_payload is None:
             return Response(
-                {"detail": f"status must be one of: {', '.join(sorted(VALID_STATUSES))}."},
+                {"detail": "at least one of status, source_text or session_payload is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        candidate.status = normalized_status
-        candidate.save(update_fields=["status", "updated_at"])
+        if status_value is not None:
+            normalized_status = str(status_value).strip()
+            if normalized_status not in VALID_STATUSES:
+                return Response(
+                    {"detail": f"status must be one of: {', '.join(sorted(VALID_STATUSES))}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            candidate.status = normalized_status
+            update_fields.add("status")
+
+        if source_text is not None:
+            normalized_source_text = str(source_text).strip()
+            if not normalized_source_text:
+                return Response({"detail": "source_text cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+            candidate.source_text = normalized_source_text
+            update_fields.add("source_text")
+
+        if session_payload is not None:
+            if not isinstance(session_payload, dict):
+                return Response({"detail": "session_payload must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+            candidate.session_payload = session_payload
+            candidate.node_count = int(session_payload.get("node_count") or len(session_payload.get("nodes") or []))
+            candidate.edge_count = int(session_payload.get("edge_count") or len(session_payload.get("edges") or []))
+            update_fields.update({"session_payload", "node_count", "edge_count"})
+
+        candidate.save(update_fields=list(update_fields))
         return Response(serialize_candidate(candidate, include_payload=True))

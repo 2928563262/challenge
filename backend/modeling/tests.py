@@ -1,6 +1,7 @@
 from django.test import TestCase
 from rest_framework.test import APIClient
 import torch
+from unittest.mock import patch
 
 from .services import _apply_relation_heuristics, _constrain_relation_predictions
 
@@ -15,8 +16,10 @@ class ModelingApiTests(TestCase):
         payload = response.json()
         self.assertIn("ner", payload)
         self.assertIn("relation", payload)
+        self.assertIn("accepted_pipeline", payload)
         self.assertIn("dataset_manifest_exists", payload["relation"])
         self.assertIn("checkpoint_exists", payload["relation"])
+        self.assertIn("accepted_report", payload["accepted_pipeline"])
 
     def test_ner_status_endpoint_returns_state(self):
         response = self.client.get("/api/v1/model/ner/status/")
@@ -56,6 +59,27 @@ class ModelingApiTests(TestCase):
             },
             format="json",
         )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("modeling.views.run_accepted_pipeline_refresh")
+    def test_accepted_pipeline_refresh_endpoint_returns_pipeline_report(self, refresh_mock):
+        refresh_mock.return_value = {
+            "export_report": {"stats": {"record_count": 9}},
+            "incremental_report": {"stats": {"accepted_record_count": 9}},
+            "merge_report": {"stats": {"ner": {"added_count": 9}}},
+            "status": {"accepted_report": {"exists": True}},
+        }
+
+        response = self.client.post("/api/v1/model/datasets/accepted/refresh/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["export_report"]["stats"]["record_count"], 9)
+        refresh_mock.assert_called_once_with(limit=None)
+
+    def test_accepted_pipeline_refresh_rejects_invalid_limit(self):
+        response = self.client.post("/api/v1/model/datasets/accepted/refresh/", {"limit": 0}, format="json")
 
         self.assertEqual(response.status_code, 400)
 

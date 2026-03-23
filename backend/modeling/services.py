@@ -13,6 +13,15 @@ DEFAULT_NER_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "ner" / 
 DEFAULT_RELATION_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "relation" / "guwenbert-relation-baseline" / "best"
 DEFAULT_NER_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "ner" / "dataset_manifest.json"
 DEFAULT_RELATION_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "relation" / "dataset_manifest.json"
+DEFAULT_ACCEPTED_DATASET_DIR = settings.DATA_DIR / "processed" / "annotation"
+DEFAULT_ACCEPTED_JSONL_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates.jsonl"
+DEFAULT_ACCEPTED_REPORT_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates_report.json"
+DEFAULT_INCREMENTAL_DIR = settings.DATA_DIR / "processed" / "annotation" / "incremental"
+DEFAULT_INCREMENTAL_REPORT_PATH = DEFAULT_INCREMENTAL_DIR / "incremental_dataset_report.json"
+DEFAULT_MERGED_ROOT = settings.DATA_DIR / "processed" / "merged"
+DEFAULT_MERGED_REPORT_PATH = DEFAULT_MERGED_ROOT / "merge_report.json"
+DEFAULT_MERGED_NER_MANIFEST = DEFAULT_MERGED_ROOT / "ner" / "dataset_manifest.json"
+DEFAULT_MERGED_RELATION_MANIFEST = DEFAULT_MERGED_ROOT / "relation" / "dataset_manifest.json"
 RUNTIME_DEPENDENCIES = ["torch", "transformers"]
 RELATION_TYPE_COMPATIBILITY = {
     ("SYNDROME", "SYMPTOM"): ["SYNDROME_HAS_SYMPTOM", "NO_RELATION"],
@@ -58,6 +67,16 @@ def _load_manifest(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_report(path: Path) -> dict[str, Any]:
+    payload = _load_manifest(path)
+    return {
+        "exists": payload is not None,
+        "path": str(path),
+        "updated_at": path.stat().st_mtime if path.exists() else None,
+        "data": payload,
+    }
+
+
 def _missing_dependencies(package_names: list[str]) -> list[str]:
     missing: list[str] = []
     for package_name in package_names:
@@ -74,6 +93,66 @@ def _artifact_commands() -> dict[str, str]:
         "train_ner_baseline": "python scripts/train_ner_baseline.py",
         "prepare_relation_dataset": "python scripts/prepare_relation_dataset.py",
         "train_relation_baseline": "python scripts/train_relation_baseline.py",
+        "export_accepted_candidates": "python scripts/export_accepted_candidates.py",
+        "prepare_accepted_incremental_datasets": "python scripts/prepare_accepted_incremental_datasets.py",
+        "merge_incremental_datasets": "python scripts/merge_incremental_datasets.py",
+    }
+
+
+def _accepted_pipeline_commands() -> dict[str, str]:
+    return {
+        "refresh_pipeline": "accepted -> export -> incremental -> merged",
+        "train_ner_with_merged": (
+            "python scripts/train_ner_baseline.py "
+            f"--dataset-dir {DEFAULT_MERGED_ROOT / 'ner'} --epochs 3 --batch-size 4 "
+            "--run-name guwenbert-ner-accepted-merged"
+        ),
+        "train_relation_with_merged": (
+            "python scripts/train_relation_baseline.py "
+            f"--dataset-dir {DEFAULT_MERGED_ROOT / 'relation'} --epochs 1 --batch-size 4 "
+            "--run-name guwenbert-relation-accepted-merged"
+        ),
+    }
+
+
+def get_accepted_pipeline_status() -> dict[str, Any]:
+    accepted_report = _read_report(DEFAULT_ACCEPTED_REPORT_PATH)
+    incremental_report = _read_report(DEFAULT_INCREMENTAL_REPORT_PATH)
+    merge_report = _read_report(DEFAULT_MERGED_REPORT_PATH)
+    merged_ner_manifest = _read_report(DEFAULT_MERGED_NER_MANIFEST)
+    merged_relation_manifest = _read_report(DEFAULT_MERGED_RELATION_MANIFEST)
+
+    return {
+        "accepted_report": accepted_report,
+        "incremental_report": incremental_report,
+        "merge_report": merge_report,
+        "merged_ner_manifest": merged_ner_manifest,
+        "merged_relation_manifest": merged_relation_manifest,
+        "commands": _accepted_pipeline_commands(),
+    }
+
+
+def run_accepted_pipeline_refresh(limit: int | None = None) -> dict[str, Any]:
+    from scripts.export_accepted_candidates import export_accepted_candidates
+    from scripts.merge_incremental_datasets import merge_incremental_datasets
+    from scripts.prepare_accepted_incremental_datasets import prepare_incremental_datasets
+
+    export_report = export_accepted_candidates(output_dir=DEFAULT_ACCEPTED_DATASET_DIR, limit=limit)
+    incremental_report = prepare_incremental_datasets(
+        accepted_path=DEFAULT_ACCEPTED_JSONL_PATH,
+        output_dir=DEFAULT_INCREMENTAL_DIR,
+    )
+    merge_report = merge_incremental_datasets(
+        ner_base_dir=settings.DATA_DIR / "processed" / "ner",
+        relation_base_dir=settings.DATA_DIR / "processed" / "relation",
+        incremental_dir=DEFAULT_INCREMENTAL_DIR,
+        output_root=DEFAULT_MERGED_ROOT,
+    )
+    return {
+        "export_report": export_report,
+        "incremental_report": incremental_report,
+        "merge_report": merge_report,
+        "status": get_accepted_pipeline_status(),
     }
 
 
@@ -299,6 +378,7 @@ def get_model_summary() -> dict[str, Any]:
     return {
         "ner": get_ner_status(),
         "relation": get_relation_status(),
+        "accepted_pipeline": get_accepted_pipeline_status(),
     }
 
 

@@ -101,6 +101,44 @@ class AnnotationApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    def test_patch_candidate_supports_updating_payload_and_source_text(self):
+        candidate = AnnotationCandidate.objects.create(
+            source_text="旧文本",
+            session_payload={"text": "旧文本", "node_count": 1, "edge_count": 0, "nodes": [], "edges": []},
+        )
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {
+                "source_text": "新文本",
+                "session_payload": {
+                    "text": "新文本",
+                    "node_count": 2,
+                    "edge_count": 1,
+                    "nodes": [
+                        {"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                        {"key": "n2", "text": "桂枝汤", "type": "FORMULA", "start": 4, "end": 7},
+                    ],
+                    "edges": [
+                        {
+                            "label": "SYNDROME_TO_FORMULA",
+                            "head": {"text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                            "tail": {"text": "桂枝汤", "type": "FORMULA", "start": 4, "end": 7},
+                            "confidence": 1,
+                        }
+                    ],
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.source_text, "新文本")
+        self.assertEqual(candidate.node_count, 2)
+        self.assertEqual(candidate.edge_count, 1)
+        self.assertEqual(candidate.session_payload["text"], "新文本")
+
 
 class AnnotationExportTests(TestCase):
     def test_export_accepted_candidates_writes_jsonl_and_report(self):

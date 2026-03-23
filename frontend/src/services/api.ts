@@ -5,6 +5,7 @@ import type {
   AnnotationCandidatePayload,
   AnnotationCandidateRecord,
   AnnotationCandidateStatusPayload,
+  AnnotationCandidateUpdatePayload,
   CorpusOverview,
   CorpusSearchResult,
   GraphEntityDetail,
@@ -14,6 +15,7 @@ import type {
   ModelSummary,
   NerPrediction,
   RelationPrediction,
+  AcceptedPipelineRefreshResponse,
 } from "../types/api";
 
 const apiClient = axios.create({
@@ -74,6 +76,13 @@ export async function fetchModelSummary() {
   return response.data;
 }
 
+export async function refreshAcceptedPipeline(limit?: number) {
+  const response = await apiClient.post<AcceptedPipelineRefreshResponse>("/model/datasets/accepted/refresh/", {
+    limit: limit ?? null,
+  });
+  return response.data;
+}
+
 export async function predictNer(text: string) {
   const response = await apiClient.post<NerPrediction>("/model/ner/predict/", { text });
   return response.data;
@@ -107,6 +116,12 @@ export async function fetchAnnotationCandidateDetail(recordId: string) {
 }
 
 export async function updateAnnotationCandidateStatus(recordId: string, payload: AnnotationCandidateStatusPayload) {
+  const encodedRecordId = encodeURIComponent(recordId);
+  const response = await apiClient.patch<AnnotationCandidateRecord>(`/annotation/candidates/${encodedRecordId}/`, payload);
+  return response.data;
+}
+
+export async function updateAnnotationCandidate(recordId: string, payload: AnnotationCandidateUpdatePayload) {
   const encodedRecordId = encodeURIComponent(recordId);
   const response = await apiClient.patch<AnnotationCandidateRecord>(`/annotation/candidates/${encodedRecordId}/`, payload);
   return response.data;

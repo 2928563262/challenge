@@ -10,6 +10,7 @@ from .services import (
     get_relation_status,
     predict_ner,
     predict_relation,
+    run_accepted_pipeline_refresh,
 )
 
 
@@ -56,3 +57,14 @@ class RelationPredictView(APIView):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except ModelUnavailableError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class AcceptedPipelineRefreshView(APIView):
+    def post(self, request):
+        limit = request.data.get("limit")
+        if limit in ("", None):
+            limit = None
+        elif not isinstance(limit, int) or limit <= 0:
+            return Response({"detail": "limit must be a positive integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(run_accepted_pipeline_refresh(limit=limit))

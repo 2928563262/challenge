@@ -128,9 +128,26 @@ export interface ModelRuntimeStatus {
   commands: Record<string, string>;
 }
 
+export interface ArtifactReport<T = Record<string, unknown> | null> {
+  exists: boolean;
+  path: string;
+  updated_at: number | null;
+  data: T | null;
+}
+
+export interface AcceptedPipelineStatus {
+  accepted_report: ArtifactReport;
+  incremental_report: ArtifactReport;
+  merge_report: ArtifactReport;
+  merged_ner_manifest: ArtifactReport;
+  merged_relation_manifest: ArtifactReport;
+  commands: Record<string, string>;
+}
+
 export interface ModelSummary {
   ner: ModelRuntimeStatus;
   relation: ModelRuntimeStatus;
+  accepted_pipeline: AcceptedPipelineStatus;
 }
 
 export interface NerPredictionEntity {
@@ -167,6 +184,7 @@ export interface RelationPrediction {
   label: string;
   confidence: number;
   top_predictions: RelationPredictionScore[];
+  source_mode?: "model" | "manual";
 }
 
 export interface AnnotationCandidatePayload {
@@ -196,8 +214,21 @@ export interface AnnotationCandidateStatusPayload {
   status: string;
 }
 
+export interface AnnotationCandidateUpdatePayload {
+  status?: string;
+  source_text?: string;
+  session_payload?: Record<string, unknown>;
+}
+
 export interface AnnotationCandidateListResponse {
   total: number;
   limit: number;
   results: AnnotationCandidateRecord[];
+}
+
+export interface AcceptedPipelineRefreshResponse {
+  export_report: Record<string, unknown>;
+  incremental_report: Record<string, unknown>;
+  merge_report: Record<string, unknown>;
+  status: AcceptedPipelineStatus;
 }
