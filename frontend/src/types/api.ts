@@ -530,3 +530,55 @@ export interface ModelActivationResponse {
   record: ModelRegistryRecord;
   registry: ModelRegistryStatus;
 }
+
+// ============ Statistics API Types ============
+export interface StatsOverview {
+  kpi: {
+    article_count: number;
+    entity_count: number;
+    relation_count: number;
+    clause_mention_count: number;
+  };
+  entity_type_breakdown: Record<string, number>;
+  relation_type_breakdown: Record<string, number>;
+  top_entities_by_type: {
+    FORMULA: Array<{ name: string; mention_count: number }>;
+    HERB: Array<{ name: string; mention_count: number }>;
+    SYNDROME: Array<{ name: string; mention_count: number }>;
+    SYMPTOM: Array<{ name: string; mention_count: number }>;
+    THERAPY: Array<{ name: string; mention_count: number }>;
+    ADMINISTRATION: Array<{ name: string; mention_count: number }>;
+  };
+}
+
+export interface HerbAnalysis {
+  top_herbs: Array<{ name: string; count: number; formulas: string[] }>;
+  cooccurrence_matrix: Record<string, Record<string, number>>;
+}
+
+export interface FormulaAnalysis {
+  top_formulas: Array<{ name: string; herb_count: number; mention_count: number }>;
+  formula_herb_network: {
+    nodes: Array<{ id: string; name: string; type: "formula" | "herb" }>;
+    edges: Array<{ source: string; target: string }>;
+  };
+}
+
+export interface ClinicalPath {
+  symptom_to_syndrome: Array<{ from: string; to: string; weight: number }>;
+  syndrome_to_formula: Array<{ from: string; to: string; weight: number }>;
+  full_sankey: {
+    nodes: Array<{ id: string; name: string; category: string }>;
+    links: Array<{ source: string; target: string; value: number }>;
+  };
+}
+
+export interface TextAnalysis {
+  article_lengths: Array<{ id: string; length: number; entities: number }>;
+  entity_density: Array<{ article_id: string; density: number }>;
+  entity_matrix: {
+    articles: string[];
+    entities: string[];
+    matrix: number[][];
+  };
+}
