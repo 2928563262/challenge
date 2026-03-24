@@ -10,6 +10,13 @@ import type { CorpusEntry, GraphEntity, GraphEntityDetail, GraphRelation, GraphS
 const router = useRoute();
 const route = useRouter();
 
+// 错误捕获：在页面加载时显示任何未捕获的错误
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (e) => {
+    console.error('Global error:', e.error);
+  });
+}
+
 // ============ 统计图表相关状态 ============
 const summary = ref<StatsOverview | null>(null);
 const loading = ref(false);
