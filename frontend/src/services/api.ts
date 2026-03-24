@@ -9,6 +9,8 @@ import type {
   CorpusOverview,
   CorpusSearchResult,
   GraphActivationResponse,
+  GraphNeo4jSyncResponse,
+  GraphNeo4jSyncStatus,
   GraphEntityDetail,
   GraphEntitySearchResult,
   GraphRegistryStatus,
@@ -20,6 +22,8 @@ import type {
   NerPrediction,
   RelationPrediction,
   AcceptedPipelineRefreshResponse,
+  TrainingJobsStatus,
+  TrainingJobStartResponse,
 } from "../types/api";
 
 const apiClient = axios.create({
@@ -69,6 +73,16 @@ export async function activateGraphVersion(graphId: string) {
   return response.data;
 }
 
+export async function fetchGraphNeo4jSyncStatus() {
+  const response = await apiClient.get<GraphNeo4jSyncStatus>("/graph/neo4j/sync/");
+  return response.data;
+}
+
+export async function syncGraphToNeo4j() {
+  const response = await apiClient.post<GraphNeo4jSyncResponse>("/graph/neo4j/sync/", {});
+  return response.data;
+}
+
 export async function searchGraphEntities(params: {
   keyword?: string;
   entityType?: string;
@@ -111,6 +125,34 @@ export async function activateModel(payload: { task: "ner" | "relation"; modelId
   const response = await apiClient.post<ModelActivationResponse>("/model/registry/activate/", {
     task: payload.task,
     model_id: payload.modelId,
+  });
+  return response.data;
+}
+
+export async function fetchTrainingJobs(limit = 20) {
+  const response = await apiClient.get<TrainingJobsStatus>("/model/jobs/", {
+    params: { limit },
+  });
+  return response.data;
+}
+
+export async function startTrainingJob(payload: {
+  task: "ner" | "relation";
+  datasetSource: "baseline" | "merged";
+  epochs?: number;
+  batchSize?: number;
+  learningRate?: number | null;
+  runName?: string;
+  activate?: boolean;
+}) {
+  const response = await apiClient.post<TrainingJobStartResponse>("/model/jobs/start/", {
+    task: payload.task,
+    dataset_source: payload.datasetSource,
+    epochs: payload.epochs ?? 3,
+    batch_size: payload.batchSize ?? 4,
+    learning_rate: payload.learningRate ?? null,
+    run_name: payload.runName ?? "",
+    activate: payload.activate ?? false,
   });
   return response.data;
 }

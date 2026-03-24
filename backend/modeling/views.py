@@ -9,10 +9,12 @@ from .services import (
     get_model_summary,
     get_model_registry_status,
     get_ner_status,
+    get_training_jobs_status,
     get_relation_status,
     predict_ner,
     predict_relation,
     run_accepted_pipeline_refresh,
+    run_training_job,
 )
 
 
@@ -99,4 +101,72 @@ class ModelRegistryActivationView(APIView):
                 "record": record,
                 "registry": get_model_registry_status(),
             }
+        )
+
+
+class TrainingJobListView(APIView):
+    def get(self, request):
+        limit_raw = request.query_params.get("limit")
+        if not limit_raw:
+            limit = 20
+        else:
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                return Response({"detail": "limit must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if limit <= 0:
+                return Response({"detail": "limit must be positive."}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(get_training_jobs_status(limit=limit))
+
+
+class TrainingJobStartView(APIView):
+    def post(self, request):
+        task = str(request.data.get("task") or "").strip().lower()
+        dataset_source = str(request.data.get("dataset_source") or "merged").strip().lower()
+        run_name_raw = request.data.get("run_name")
+        run_name = str(run_name_raw).strip() if run_name_raw is not None else None
+        epochs = request.data.get("epochs", 3)
+        batch_size = request.data.get("batch_size", 4)
+        learning_rate_raw = request.data.get("learning_rate")
+        activate = bool(request.data.get("activate", False))
+
+        try:
+            epochs = int(epochs)
+            batch_size = int(batch_size)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "epochs and batch_size must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        learning_rate = None
+        if learning_rate_raw not in ("", None):
+            try:
+                learning_rate = float(learning_rate_raw)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "learning_rate must be a number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            record = run_training_job(
+                task=task,
+                dataset_source=dataset_source,
+                run_name=run_name,
+                epochs=epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                activate=activate,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "job": record,
+                "jobs": get_training_jobs_status(limit=20),
+            },
+            status=status.HTTP_202_ACCEPTED,
         )

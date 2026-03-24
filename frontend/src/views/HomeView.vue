@@ -1,86 +1,117 @@
 <script setup lang="ts">
+import axios from "axios";
 import { computed, onMounted, ref } from "vue";
-import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
-import axios from "axios";
-
+import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel } from "../i18n";
-import { activateGraphVersion, fetchGraphRegistry, fetchGraphShowcase, fetchGraphSummary, fetchModelSummary, fetchOverview, refreshReviewedGraph } from "../services/api";
-import type { CorpusOverview, GraphEntity, GraphRegistryStatus, GraphShowcaseCase, GraphSummary, GraphVersionRecord, ModelSummary } from "../types/api";
+import {
+  fetchGraphNeo4jSyncStatus,
+  fetchGraphShowcase,
+  fetchGraphSummary,
+  fetchModelSummary,
+  fetchOverview,
+  syncGraphToNeo4j,
+} from "../services/api";
+import type {
+  CorpusOverview,
+  GraphEntity,
+  GraphNeo4jSyncStatus,
+  GraphShowcaseCase,
+  GraphSummary,
+  GraphVersionRecord,
+  ModelSummary,
+} from "../types/api";
 
 const router = useRouter();
-const { t } = useI18n();
 
 const overview = ref<CorpusOverview | null>(null);
 const graphSummary = ref<GraphSummary | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
-const graphRegistry = ref<GraphRegistryStatus | null>(null);
 const modelSummary = ref<ModelSummary | null>(null);
+const graphSyncStatus = ref<GraphNeo4jSyncStatus | null>(null);
 
 const loadingOverview = ref(false);
 const loadingGraphSummary = ref(false);
 const loadingShowcase = ref(false);
-const loadingGraphRegistry = ref(false);
 const loadingModelSummary = ref(false);
-const refreshingReviewedGraph = ref(false);
-const activatingGraphId = ref("");
+const loadingGraphSyncStatus = ref(false);
+const syncingGraph = ref(false);
 
 const overviewError = ref("");
 const graphError = ref("");
 const showcaseError = ref("");
 const modelError = ref("");
-const graphActionMessage = ref("");
+const graphSyncError = ref("");
+const graphSyncMessage = ref("");
 
 const heroStats = computed(() => {
-  if (!graphSummary.value || !overview.value) {
+  if (!graphSummary.value) {
     return [];
   }
 
   return [
     { label: "清洗后条文", value: graphSummary.value.input_record_count.toLocaleString("zh-CN") },
     { label: "知识节点", value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
-    { label: "图谱关系", value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
+    { label: "实体关系", value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
     { label: "原文证据边", value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
   ];
+});
+
+const systemStatusCards = computed(() => {
+  if (!modelSummary.value || !graphSummary.value?.graph_version) {
+    return [];
+  }
+
+  const activeNer = modelSummary.value.registry.active.ner;
+  const activeRelation = modelSummary.value.registry.active.relation;
+  const acceptedCount = Number((modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, any> | null)?.stats?.record_count ?? 0);
+
+  return [
+    {
+      label: "默认实体识别模型",
+      value: activeNer.run_name,
+      meta: `${formatDatasetSource(activeNer.dataset_source)} · ${formatModelMetric(activeNer)}`,
+    },
+    {
+      label: "默认关系抽取模型",
+      value: activeRelation.run_name,
+      meta: `${formatDatasetSource(activeRelation.dataset_source)} · ${formatModelMetric(activeRelation)}`,
+    },
+    {
+      label: "当前图谱版本",
+      value: graphSummary.value.graph_version.run_name,
+      meta: `${formatGraphSource(graphSummary.value.graph_version.source_type)} · ${formatGraphMetric(graphSummary.value.graph_version)}`,
+    },
+    {
+      label: "已采纳记录",
+      value: `${acceptedCount} 条`,
+      meta: `最近更新：${formatUnixTimestamp(modelSummary.value.accepted_pipeline.accepted_report.updated_at)}`,
+    },
+  ];
+});
+
+const graphSyncCard = computed(() => {
+  const report = graphSyncStatus.value?.report;
+  if (!report) {
+    return null;
+  }
+
+  const summary = report.summary ?? {};
+  return {
+    label: report.ok ? "最近一次 Neo4j 同步" : "Neo4j 同步失败",
+    value: typeof (report.graph_version as Record<string, unknown>)?.run_name === "string"
+      ? String((report.graph_version as Record<string, unknown>).run_name)
+      : "未记录",
+    meta: report.ok
+      ? `节点 ${summary.entity_nodes ?? 0} · 关系 ${summary.entity_relations ?? 0} · 数据库 ${report.database}`
+      : report.detail,
+  };
 });
 
 const typeBreakdown = computed(() => Object.entries(graphSummary.value?.entity_type_breakdown ?? {}));
 const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
-const graphVersion = computed(() => graphSummary.value?.graph_version ?? null);
-const graphVersions = computed(() => graphRegistry.value?.versions ?? []);
-const systemStatusCards = computed(() => {
-  if (!modelSummary.value || !graphVersion.value) {
-    return [];
-  }
-
-  const acceptedCount = Number((modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, any> | null)?.stats?.record_count ?? 0);
-  const acceptedUpdatedAt = modelSummary.value.accepted_pipeline.accepted_report.updated_at;
-
-  return [
-    {
-      label: "默认 NER 模型",
-      value: modelSummary.value.registry.active.ner.run_name,
-      meta: `${formatDatasetSource(modelSummary.value.registry.active.ner.dataset_source)} · ${formatModelMetric(modelSummary.value.registry.active.ner)}`,
-    },
-    {
-      label: "默认 RE 模型",
-      value: modelSummary.value.registry.active.relation.run_name,
-      meta: `${formatDatasetSource(modelSummary.value.registry.active.relation.dataset_source)} · ${formatModelMetric(modelSummary.value.registry.active.relation)}`,
-    },
-    {
-      label: "默认图谱版本",
-      value: graphVersion.value.run_name,
-      meta: `${formatGraphSource(graphVersion.value.source_type)} · ${formatGraphMetric(graphVersion.value)}`,
-    },
-    {
-      label: "已采纳记录",
-      value: `${acceptedCount} 条`,
-      meta: `最近更新 ${formatUnixTimestamp(acceptedUpdatedAt)}`,
-    },
-  ];
-});
 
 function formatEntityType(entityTypeName: string) {
   return formatEntityTypeLabel(entityTypeName);
@@ -88,26 +119,12 @@ function formatEntityType(entityTypeName: string) {
 
 function formatGraphSource(sourceType: string) {
   if (sourceType === "accepted_reviewed") {
-    return "已复核记录";
+    return "复核图谱";
   }
   if (sourceType === "cleaned_silver") {
-    return "清洗银标准";
+    return "银标准图谱";
   }
-  return "自定义导出";
-}
-
-function formatDateTime(value: string) {
-  if (!value) {
-    return "未记录";
-  }
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
-
-function formatUnixTimestamp(value: number | null) {
-  if (!value) {
-    return "未记录";
-  }
-  return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
+  return "自定义图谱";
 }
 
 function formatDatasetSource(source: string) {
@@ -125,6 +142,7 @@ function formatModelMetric(record: ModelSummary["registry"]["active"]["ner"] | M
     const f1 = record.validation_metrics.eval_f1 ?? record.validation_metrics.f1;
     return typeof f1 === "number" ? `验证 F1 ${f1.toFixed(4)}` : "验证指标未记录";
   }
+
   const macroF1 = record.validation_metrics.eval_macro_f1 ?? record.validation_metrics.macro_f1;
   return typeof macroF1 === "number" ? `验证 Macro-F1 ${macroF1.toFixed(4)}` : "验证指标未记录";
 }
@@ -133,6 +151,13 @@ function formatGraphMetric(record: GraphVersionRecord) {
   const entityCount = Number(record.stats.entity_node_count ?? 0);
   const relationCount = Number(record.stats.entity_relation_count ?? 0);
   return `节点 ${entityCount} · 关系 ${relationCount}`;
+}
+
+function formatUnixTimestamp(value: number | null) {
+  if (!value) {
+    return "未记录";
+  }
+  return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
 }
 
 function openExplorer(entity: GraphEntity) {
@@ -156,7 +181,7 @@ async function loadOverview() {
   try {
     overview.value = await fetchOverview();
   } catch {
-    overviewError.value = "文本概览加载失败，请确认 Django 服务已经启动。";
+    overviewError.value = "文本概览加载失败，请确认后端服务已经启动。";
   } finally {
     loadingOverview.value = false;
   }
@@ -174,17 +199,6 @@ async function loadGraphSummary() {
   }
 }
 
-async function loadGraphRegistry() {
-  loadingGraphRegistry.value = true;
-  try {
-    graphRegistry.value = await fetchGraphRegistry();
-  } catch {
-    graphError.value = "图谱版本列表加载失败，请确认图谱接口可访问。";
-  } finally {
-    loadingGraphRegistry.value = false;
-  }
-}
-
 async function loadModelSummary() {
   loadingModelSummary.value = true;
   modelError.value = "";
@@ -197,44 +211,38 @@ async function loadModelSummary() {
   }
 }
 
-async function runReviewedGraphRefresh() {
-  refreshingReviewedGraph.value = true;
-  graphError.value = "";
-  graphActionMessage.value = "";
+async function loadGraphSyncStatus() {
+  loadingGraphSyncStatus.value = true;
+  graphSyncError.value = "";
   try {
-    const payload = await refreshReviewedGraph();
-    graphSummary.value = payload.graph_summary;
-    graphRegistry.value = payload.registry;
-    graphActionMessage.value = `已根据复核记录刷新图谱，当前版本：${payload.registry.active.run_name}`;
-    await loadShowcase();
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      graphError.value = String(error.response?.data?.detail || "复核图谱刷新失败。");
-    } else {
-      graphError.value = "复核图谱刷新失败。";
-    }
+    graphSyncStatus.value = await fetchGraphNeo4jSyncStatus();
+  } catch {
+    graphSyncError.value = "Neo4j 同步状态加载失败，请确认图谱接口可访问。";
   } finally {
-    refreshingReviewedGraph.value = false;
+    loadingGraphSyncStatus.value = false;
   }
 }
 
-async function runGraphActivation(graphId: string) {
-  activatingGraphId.value = graphId;
-  graphError.value = "";
-  graphActionMessage.value = "";
+async function runNeo4jSync() {
+  syncingGraph.value = true;
+  graphSyncError.value = "";
+  graphSyncMessage.value = "";
   try {
-    const payload = await activateGraphVersion(graphId);
-    graphRegistry.value = payload.registry;
-    await Promise.all([loadGraphSummary(), loadShowcase()]);
-    graphActionMessage.value = `已切换当前图谱版本：${payload.record.run_name}`;
+    const payload = await syncGraphToNeo4j();
+    graphSyncStatus.value = payload.status;
+    const summary = payload.sync.summary ?? {};
+    graphSyncMessage.value = `已同步到 Neo4j：节点 ${summary.entity_nodes ?? 0}，关系 ${summary.entity_relations ?? 0}。`;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      graphError.value = String(error.response?.data?.detail || "图谱版本切换失败。");
+      graphSyncError.value = String(error.response?.data?.detail || "Neo4j 同步失败。");
+      if (error.response?.data?.status) {
+        graphSyncStatus.value = error.response.data.status as GraphNeo4jSyncStatus;
+      }
     } else {
-      graphError.value = "图谱版本切换失败。";
+      graphSyncError.value = "Neo4j 同步失败。";
     }
   } finally {
-    activatingGraphId.value = "";
+    syncingGraph.value = false;
   }
 }
 
@@ -252,7 +260,7 @@ async function loadShowcase() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase(), loadGraphRegistry(), loadModelSummary()]);
+  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase(), loadModelSummary(), loadGraphSyncStatus()]);
 });
 </script>
 
@@ -260,43 +268,29 @@ onMounted(async () => {
   <main class="page-shell knowledge-page home-dashboard">
     <section class="hero-panel hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">{{ t("home.heroKicker") }}</p>
-        <h1>围绕《伤寒论》做一个可检索、可建图、可展示、可答辩的最小闭环系统。</h1>
-        <p class="hero-description">
-          首页负责给出项目全貌、核心统计和典型案例入口；图谱浏览页负责实体检索、关系网络概览和原文证据回溯。
-        </p>
+        <p class="eyebrow">伤寒论知识图谱系统</p>
+        <h1>《伤寒论》知识图谱与抽取系统</h1>
+        <p class="hero-description">面向《伤寒论》文本的知识抽取、图谱检索、候选复核与模型回流一体化原型。</p>
         <div class="cta-row">
           <RouterLink to="/explore" class="primary-link-button">进入图谱浏览</RouterLink>
-          <button class="ghost-button" type="button" @click="loadGraphSummary" :disabled="loadingGraphSummary">
-            {{ loadingGraphSummary ? t("common.refreshing") : t("common.refreshGraphSummary") }}
-          </button>
-          <button class="ghost-button" type="button" @click="runReviewedGraphRefresh" :disabled="refreshingReviewedGraph">
-            {{ refreshingReviewedGraph ? "刷新复核图谱中..." : "用复核记录刷新图谱" }}
-          </button>
-        </div>
-      </div>
-
-      <div class="hero-side showcase-card">
-        <div class="showcase-block">
-          <span>当前主线</span>
-          <strong>文本清洗 → 图谱导入 → 查询展示</strong>
-          <p>这一版优先把系统主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
-        </div>
-        <div v-if="graphVersion" class="showcase-block">
-          <span>当前图谱版本</span>
-          <strong>{{ graphVersion.run_name }}</strong>
-          <p>{{ formatGraphSource(graphVersion.source_type) }} · 更新时间 {{ formatDateTime(graphVersion.updated_at) }}</p>
+          <RouterLink to="/annotations" class="ghost-link">进入候选复核</RouterLink>
         </div>
       </div>
     </section>
 
-    <p v-if="graphActionMessage" class="status-text">{{ graphActionMessage }}</p>
-
     <section class="stats-grid hero-stats">
-      <article v-for="item in heroStats" :key="item.label" class="stat-card">
-        <span>{{ item.label }}</span>
-        <strong>{{ item.value }}</strong>
-      </article>
+      <StatePanel v-if="graphError" tone="error">
+        <p>{{ graphError }}</p>
+      </StatePanel>
+      <StatePanel v-else-if="loadingGraphSummary" tone="info">
+        <p>正在加载图谱统计...</p>
+      </StatePanel>
+      <template v-else>
+        <article v-for="item in heroStats" :key="item.label" class="stat-card">
+          <span>{{ item.label }}</span>
+          <strong>{{ item.value }}</strong>
+        </article>
+      </template>
     </section>
 
     <section class="panel showcase-panel">
@@ -307,8 +301,12 @@ onMounted(async () => {
         </div>
       </div>
 
-      <p v-if="modelError" class="status-text error">{{ modelError }}</p>
-      <p v-else-if="loadingModelSummary" class="status-text">正在加载系统状态...</p>
+      <StatePanel v-if="modelError" tone="error">
+        <p>{{ modelError }}</p>
+      </StatePanel>
+      <StatePanel v-else-if="loadingModelSummary" tone="info">
+        <p>正在加载系统状态...</p>
+      </StatePanel>
       <div v-else class="stats-grid hero-stats system-status-grid">
         <article v-for="item in systemStatusCards" :key="item.label" class="stat-card">
           <span>{{ item.label }}</span>
@@ -321,14 +319,50 @@ onMounted(async () => {
     <section class="panel showcase-panel">
       <div class="panel-header compact-header">
         <div>
-          <p class="panel-kicker">{{ t("home.showcaseKicker") }}</p>
-          <h2>典型案例入口</h2>
+          <p class="panel-kicker">图谱同步</p>
+          <h2>Neo4j 同步状态</h2>
         </div>
-        <RouterLink to="/explore" class="ghost-link">查看全部图谱细节</RouterLink>
+        <button class="ghost-button" type="button" :disabled="syncingGraph" @click="runNeo4jSync">
+          {{ syncingGraph ? "同步中..." : "同步当前图谱到 Neo4j" }}
+        </button>
       </div>
 
-      <p v-if="showcaseError" class="status-text error">{{ showcaseError }}</p>
-      <p v-else-if="loadingShowcase" class="status-text">正在加载典型案例...</p>
+      <StatePanel v-if="graphSyncError" tone="error">
+        <p>{{ graphSyncError }}</p>
+      </StatePanel>
+      <StatePanel v-else-if="graphSyncMessage" tone="success">
+        <p>{{ graphSyncMessage }}</p>
+      </StatePanel>
+      <StatePanel v-else-if="loadingGraphSyncStatus" tone="info">
+        <p>正在加载 Neo4j 同步状态...</p>
+      </StatePanel>
+      <div v-else-if="graphSyncCard" class="dataset-split-grid">
+        <article class="dataset-split-card">
+          <span>{{ graphSyncCard.label }}</span>
+          <strong>{{ graphSyncCard.value }}</strong>
+          <p>{{ graphSyncCard.meta }}</p>
+        </article>
+      </div>
+      <StatePanel v-else tone="warning">
+        <p>当前还没有 Neo4j 同步记录。</p>
+      </StatePanel>
+    </section>
+
+    <section class="panel showcase-panel">
+      <div class="panel-header compact-header">
+        <div>
+          <p class="panel-kicker">典型案例</p>
+          <h2>典型案例入口</h2>
+        </div>
+        <RouterLink to="/explore" class="ghost-link">查看图谱细节</RouterLink>
+      </div>
+
+      <StatePanel v-if="showcaseError" tone="error">
+        <p>{{ showcaseError }}</p>
+      </StatePanel>
+      <StatePanel v-else-if="loadingShowcase" tone="info">
+        <p>正在加载典型案例...</p>
+      </StatePanel>
       <div v-else class="showcase-grid">
         <button
           v-for="caseItem in showcaseCases"
@@ -358,12 +392,14 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.snapshotKicker") }}</p>
-            <h2>图谱类型分布</h2>
+            <p class="panel-kicker">图谱快照</p>
+            <h2>实体类型分布</h2>
           </div>
         </div>
 
-        <p v-if="graphError" class="status-text error">{{ graphError }}</p>
+        <StatePanel v-if="graphError" tone="error">
+          <p>{{ graphError }}</p>
+        </StatePanel>
         <div v-else class="breakdown-list">
           <div v-for="([type, count]) in typeBreakdown" :key="type" class="breakdown-item">
             <span>{{ formatEntityType(type) }}</span>
@@ -375,7 +411,7 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.topEntitiesKicker") }}</p>
+            <p class="panel-kicker">核心节点</p>
             <h2>高频知识节点</h2>
           </div>
         </div>
@@ -400,13 +436,17 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.formulaPreviewKicker") }}</p>
+            <p class="panel-kicker">文本样本</p>
             <h2>方剂相关条文样本</h2>
           </div>
         </div>
 
-        <p v-if="overviewError" class="status-text error">{{ overviewError }}</p>
-        <p v-else-if="loadingOverview" class="status-text">正在加载文本概览...</p>
+        <StatePanel v-if="overviewError" tone="error">
+          <p>{{ overviewError }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="loadingOverview" tone="info">
+          <p>正在加载文本概览...</p>
+        </StatePanel>
         <div v-else class="sample-feed">
           <article v-for="entry in formulaSamples" :key="entry.id" class="sample-card">
             <div class="result-meta">
@@ -421,73 +461,30 @@ onMounted(async () => {
       <article class="panel narrative-panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.focusKicker") }}</p>
-            <h2>当前系统能做什么</h2>
+            <p class="panel-kicker">系统能力</p>
+            <h2>当前系统支持的核心流程</h2>
           </div>
         </div>
 
         <div class="narrative-list">
           <div class="narrative-item">
-            <strong>关键词检索</strong>
-            <p>按方剂、证候、症状、中药等入口快速定位核心知识节点。</p>
+            <strong>图谱检索</strong>
+            <p>支持按方剂、证候、症状和中药等入口快速定位实体，并查看关联关系与原文证据。</p>
           </div>
           <div class="narrative-item">
-            <strong>关系网络概览</strong>
-            <p>从一个实体出发查看主要入边和出边，快速讲清“谁和谁相关”。</p>
+            <strong>模型辅助抽取</strong>
+            <p>支持条文实体识别、关系辅助判断和临时会话图构建，便于快速检查抽取结果。</p>
           </div>
           <div class="narrative-item">
-            <strong>原文证据回溯</strong>
-            <p>所有实体都能回到条文片段，避免图谱展示脱离原文来源。</p>
+            <strong>候选复核</strong>
+            <p>支持提交候选记录、人工修正实体与关系，并沉淀为后续训练和建图的高质量样本。</p>
           </div>
           <div class="narrative-item">
-            <strong>候选复核闭环</strong>
-            <p>抽取结果可以提交为候选记录，经过复核后继续回流到训练数据。</p>
+            <strong>模型与图谱回流</strong>
+            <p>支持已采纳记录自动回流训练集、复核图谱刷新，以及同步到 Neo4j 进行查询展示。</p>
           </div>
         </div>
       </article>
-    </section>
-
-    <section class="panel showcase-panel">
-      <div class="panel-header compact-header">
-        <div>
-          <p class="panel-kicker">图谱版本</p>
-          <h2>图谱版本管理</h2>
-        </div>
-      </div>
-
-      <p v-if="loadingGraphRegistry" class="status-text">正在加载图谱版本...</p>
-      <div v-else class="dataset-split-grid model-registry-grid">
-        <article class="dataset-split-card">
-          <span>当前默认图谱</span>
-          <strong>{{ graphRegistry?.active.run_name || "未记录" }}</strong>
-          <p v-if="graphRegistry?.active">
-            {{ formatGraphSource(graphRegistry.active.source_type) }} · {{ formatGraphMetric(graphRegistry.active) }}
-          </p>
-          <p v-if="graphRegistry?.active">更新时间：{{ formatDateTime(graphRegistry.active.updated_at) }}</p>
-        </article>
-
-        <article class="dataset-split-card">
-          <span>可切换版本</span>
-          <div v-if="graphVersions.length" class="registry-list">
-            <div v-for="record in graphVersions" :key="record.id" class="registry-row">
-              <div>
-                <strong>{{ record.run_name }}</strong>
-                <p>{{ formatGraphSource(record.source_type) }} · {{ formatGraphMetric(record) }}</p>
-                <p>更新时间：{{ formatDateTime(record.updated_at) }}</p>
-              </div>
-              <button
-                class="ghost-button mini-button"
-                type="button"
-                :disabled="record.is_active || activatingGraphId === record.id"
-                @click="runGraphActivation(record.id)"
-              >
-                {{ record.is_active ? "当前默认" : activatingGraphId === record.id ? "切换中..." : "设为默认" }}
-              </button>
-            </div>
-          </div>
-          <p v-else class="status-text">暂无已登记的图谱版本。</p>
-        </article>
-      </div>
     </section>
   </main>
 </template>

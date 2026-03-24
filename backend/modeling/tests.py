@@ -157,6 +157,65 @@ class ModelingApiTests(TestCase):
         self.assertEqual(payload["registry"]["active"]["ner"]["id"], second["id"])
         self.assertNotEqual(first["id"], second["id"])
 
+    @patch("modeling.views.get_training_jobs_status")
+    def test_training_job_list_endpoint_returns_jobs(self, jobs_mock):
+        jobs_mock.return_value = {
+            "path": "D:/code/python/challenge/data/processed/training_jobs/jobs.json",
+            "running_count": 1,
+            "jobs": [{"id": "ner-123", "task": "ner", "status": "running"}],
+        }
+
+        response = self.client.get("/api/v1/model/jobs/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["running_count"], 1)
+        self.assertEqual(payload["jobs"][0]["id"], "ner-123")
+        jobs_mock.assert_called_once_with(limit=20)
+
+    @patch("modeling.views.get_training_jobs_status")
+    @patch("modeling.views.run_training_job")
+    def test_training_job_start_endpoint_starts_job(self, run_mock, jobs_mock):
+        run_mock.return_value = {"id": "ner-123", "task": "ner", "status": "running"}
+        jobs_mock.return_value = {
+            "path": "D:/code/python/challenge/data/processed/training_jobs/jobs.json",
+            "running_count": 1,
+            "jobs": [{"id": "ner-123", "task": "ner", "status": "running"}],
+        }
+
+        response = self.client.post(
+            "/api/v1/model/jobs/start/",
+            {
+                "task": "ner",
+                "dataset_source": "merged",
+                "epochs": 3,
+                "batch_size": 4,
+                "activate": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertEqual(payload["job"]["id"], "ner-123")
+        run_mock.assert_called_once()
+        kwargs = run_mock.call_args.kwargs
+        self.assertEqual(kwargs["task"], "ner")
+        self.assertEqual(kwargs["dataset_source"], "merged")
+        self.assertEqual(kwargs["epochs"], 3)
+        self.assertEqual(kwargs["batch_size"], 4)
+        self.assertTrue(kwargs["activate"])
+        jobs_mock.assert_called_once_with(limit=20)
+
+    def test_training_job_start_endpoint_rejects_invalid_task(self):
+        response = self.client.post(
+            "/api/v1/model/jobs/start/",
+            {"task": "invalid", "dataset_source": "merged"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
 
 class RelationConstraintTests(TestCase):
     def test_constraint_rewrites_incompatible_top_label_for_syndrome_formula_pair(self):

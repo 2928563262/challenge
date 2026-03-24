@@ -119,6 +119,7 @@ export interface ReviewedGraphRefreshResponse {
   summary: Record<string, unknown>;
   registry: GraphRegistryStatus;
   graph_summary: GraphSummary;
+  neo4j_sync?: GraphNeo4jSyncReport;
 }
 
 export interface GraphRegistryStatus {
@@ -130,6 +131,30 @@ export interface GraphRegistryStatus {
 export interface GraphActivationResponse {
   record: GraphVersionRecord;
   registry: GraphRegistryStatus;
+}
+
+export interface GraphNeo4jSyncReport {
+  ok: boolean;
+  detail: string;
+  graph_version: GraphVersionRecord | Record<string, unknown>;
+  graph_dir: string;
+  uri: string;
+  database: string;
+  summary?: Record<string, number>;
+  run_name?: string;
+  entity_node_count?: number;
+  entity_relation_count?: number;
+}
+
+export interface GraphNeo4jSyncStatus {
+  exists: boolean;
+  path: string;
+  report: GraphNeo4jSyncReport | null;
+}
+
+export interface GraphNeo4jSyncResponse {
+  sync: GraphNeo4jSyncReport;
+  status: GraphNeo4jSyncStatus;
 }
 
 export interface DatasetSplitSummary {
@@ -205,6 +230,42 @@ export interface ModelSummary {
   relation: ModelRuntimeStatus;
   accepted_pipeline: AcceptedPipelineStatus;
   registry: ModelRegistryStatus;
+  training_jobs: TrainingJobsStatus;
+}
+
+export interface TrainingJobRecord {
+  id: string;
+  task: "ner" | "relation";
+  status: "running" | "succeeded" | "failed";
+  dataset_source: string;
+  dataset_dir: string;
+  run_name: string;
+  epochs: number;
+  batch_size: number;
+  learning_rate: number | null;
+  activate: boolean;
+  command: string[];
+  pid: number;
+  log_path: string;
+  expected_summary_path: string;
+  summary: Record<string, unknown> | null;
+  return_code: number | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+export interface TrainingJobsStatus {
+  path: string;
+  running_count: number;
+  jobs: TrainingJobRecord[];
+}
+
+export interface TrainingJobStartResponse {
+  job: TrainingJobRecord;
+  jobs: TrainingJobsStatus;
 }
 
 export interface NerPredictionEntity {
@@ -252,6 +313,24 @@ export interface AnnotationCandidatePayload {
   relation_model_dir?: string;
 }
 
+export interface AutoPipelineRefreshMeta {
+  triggered: boolean;
+  ok: boolean;
+  detail: string;
+  export_record_count?: number;
+  merge_ner_added_count?: number;
+  merge_relation_added_count?: number;
+}
+
+export interface AutoGraphRefreshMeta {
+  triggered: boolean;
+  ok: boolean;
+  detail: string;
+  run_name?: string;
+  entity_node_count?: number;
+  entity_relation_count?: number;
+}
+
 export interface AnnotationCandidateRecord {
   record_id: string;
   status: string;
@@ -265,6 +344,8 @@ export interface AnnotationCandidateRecord {
   created_at: string;
   updated_at: string;
   session_payload?: Record<string, unknown>;
+  auto_pipeline_refresh?: AutoPipelineRefreshMeta;
+  auto_graph_refresh?: AutoGraphRefreshMeta;
 }
 
 export interface AnnotationCandidateStatusPayload {

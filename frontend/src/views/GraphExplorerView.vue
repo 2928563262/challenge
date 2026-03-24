@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
+import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
   fetchGraphEntityDetail,
@@ -1030,8 +1031,10 @@ watch(
           <h2>一键演示案例</h2>
         </div>
       </div>
-      <p v-if="showcaseError" class="status-text error">{{ showcaseError }}</p>
-      <div v-else class="compact-showcase-list">
+        <StatePanel v-if="showcaseError" tone="error">
+          <p>{{ showcaseError }}</p>
+        </StatePanel>
+        <div v-else class="compact-showcase-list">
         <button v-for="caseItem in showcaseCases" :key="caseItem.slug" type="button" class="compact-case-chip" @click="openShowcaseCase(caseItem)">
           <strong>{{ caseItem.entity.name }}</strong>
           <span>{{ caseItem.title }}</span>
@@ -1055,8 +1058,12 @@ watch(
           </div>
         </form>
 
-        <p v-if="nerError" class="status-text error">{{ nerError }}</p>
-        <p v-else class="status-text">当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。</p>
+        <StatePanel v-if="nerError" tone="error">
+          <p>{{ nerError }}</p>
+        </StatePanel>
+        <StatePanel v-else tone="info">
+          <p>当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。</p>
+        </StatePanel>
       </article>
 
       <article class="panel">
@@ -1067,7 +1074,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!nerPrediction" class="status-text">先运行一次抽取，这里会显示实体结果和类型分布。</p>
+        <StatePanel v-if="!nerPrediction" tone="warning">
+          <p>先运行一次抽取，这里会显示实体结果和类型分布。</p>
+        </StatePanel>
         <template v-else>
           <div class="prediction-summary-strip">
             <div class="breakdown-item"><span>抽取实体</span><strong>{{ predictionMatchSummary.total }}</strong></div>
@@ -1100,11 +1109,17 @@ watch(
               rows="2"
               placeholder="完整服法文本/备注，可选。例如：右三味，以水三升，煮取一升二合，去滓。分温再服。"
             />
-            <p v-if="manualEntityError" class="status-text error">{{ manualEntityError }}</p>
-            <p v-else class="status-text">若实体在条文中只出现一次，可只填文本和类型；若重复出现，请补起始位置。</p>
+            <StatePanel v-if="manualEntityError" tone="error">
+              <p>{{ manualEntityError }}</p>
+            </StatePanel>
+            <StatePanel v-else tone="info">
+              <p>若实体在条文中只出现一次，可只填文本和类型；若重复出现，请补起始位置。</p>
+            </StatePanel>
           </div>
 
-          <p v-if="resolvingPredictedEntities" class="status-text">正在把抽取结果映射到图谱节点...</p>
+          <StatePanel v-if="resolvingPredictedEntities" tone="info">
+            <p>正在把抽取结果映射到图谱节点...</p>
+          </StatePanel>
 
           <div class="entity-chip-list explorer-entity-chip-list">
             <div v-for="entity in predictedEntities" :key="predictedEntityKey(entity)" class="entity-chip mapped-entity-chip">
@@ -1196,9 +1211,15 @@ watch(
           </div>
         </form>
 
-        <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
-        <p v-else-if="relationBatchMessage" class="status-text">{{ relationBatchMessage }}</p>
-        <p v-else class="status-text">当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断“证候-方剂”或“证候-症状”是否成立。</p>
+        <StatePanel v-if="relationPredictError" tone="error">
+          <p>{{ relationPredictError }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="relationBatchMessage" tone="success">
+          <p>{{ relationBatchMessage }}</p>
+        </StatePanel>
+        <StatePanel v-else tone="info">
+          <p>当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断“证候-方剂”或“证候-症状”是否成立。</p>
+        </StatePanel>
       </article>
 
       <article class="panel">
@@ -1209,7 +1230,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!relationPrediction" class="status-text">选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。</p>
+        <StatePanel v-if="!relationPrediction" tone="warning">
+          <p>选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。</p>
+        </StatePanel>
         <template v-else>
           <div class="relation-result-card">
             <div class="breakdown-item"><span>预测关系</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
@@ -1241,9 +1264,13 @@ watch(
         </div>
       </div>
 
-      <p v-if="!predictedEntities.length" class="status-text">先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。</p>
+      <StatePanel v-if="!predictedEntities.length" tone="warning">
+        <p>先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。</p>
+      </StatePanel>
       <template v-else>
-        <p class="status-text">{{ exportMessage || '可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。' }}</p>
+        <StatePanel :tone="exportMessage ? 'success' : 'info'">
+          <p>{{ exportMessage || '可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。' }}</p>
+        </StatePanel>
         <div class="session-graph-layout">
           <div class="session-graph-canvas">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
@@ -1340,8 +1367,12 @@ watch(
           </div>
         </form>
 
-        <p v-if="searchError" class="status-text error">{{ searchError }}</p>
-        <p v-else class="status-text">图谱命中 {{ searchTotal }} 个实体，条文命中 {{ corpusTotal }} 条。</p>
+        <StatePanel v-if="searchError" tone="error">
+          <p>{{ searchError }}</p>
+        </StatePanel>
+        <StatePanel v-else tone="info">
+          <p>图谱命中 {{ searchTotal }} 个实体，条文命中 {{ corpusTotal }} 条。</p>
+        </StatePanel>
 
         <div class="entity-result-list">
           <button v-for="entity in searchResults" :key="entity.entity_id" class="entity-result-card" :class="{ active: selectedEntityDetail?.entity.entity_id === entity.entity_id }" type="button" @click="loadEntityDetail(entity.entity_id)">
@@ -1362,9 +1393,15 @@ watch(
           </div>
         </div>
 
-        <p v-if="graphError" class="status-text error">{{ graphError }}</p>
-        <p v-else-if="loadingEntityDetail" class="status-text">正在加载实体详情...</p>
-        <p v-else-if="!selectedEntityDetail" class="status-text">先检索并选择一个实体，系统会展示它的关联关系与原文证据。</p>
+        <StatePanel v-if="graphError" tone="error">
+          <p>{{ graphError }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="loadingEntityDetail" tone="info">
+          <p>正在加载实体详情...</p>
+        </StatePanel>
+        <StatePanel v-else-if="!selectedEntityDetail" tone="warning">
+          <p>先检索并选择一个实体，系统会展示它的关联关系与原文证据。</p>
+        </StatePanel>
 
         <template v-else>
           <div class="entity-focus-card">
@@ -1422,7 +1459,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!selectedEntityDetail" class="status-text">选择一个实体后，这里会显示它在条文中的出现位置与证据片段。</p>
+        <StatePanel v-if="!selectedEntityDetail" tone="warning">
+          <p>选择一个实体后，这里会显示它在条文中的出现位置与证据片段。</p>
+        </StatePanel>
         <div v-else class="evidence-list">
           <article v-for="mention in selectedEntityDetail.mentions" :key="`${mention.clause_id}-${mention.start}-${mention.end}`" class="evidence-card">
             <div class="evidence-meta">

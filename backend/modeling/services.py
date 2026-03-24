@@ -8,6 +8,7 @@ from typing import Any
 from django.conf import settings
 
 from .registry import activate_model, get_active_model, get_registry_path, list_models
+from .training_jobs import list_training_jobs, start_training_job
 
 DEFAULT_NER_BASE_MODEL = os.getenv("NER_BASE_MODEL", "ethanyt/guwenbert-base")
 DEFAULT_RELATION_BASE_MODEL = os.getenv("RELATION_BASE_MODEL", DEFAULT_NER_BASE_MODEL)
@@ -170,6 +171,31 @@ def get_model_registry_status() -> dict[str, Any]:
 
 def activate_registered_model(task: str, model_id: str) -> dict[str, Any]:
     return activate_model(task=task, model_id=model_id)
+
+
+def get_training_jobs_status(limit: int = 20) -> dict[str, Any]:
+    return list_training_jobs(limit=limit)
+
+
+def run_training_job(
+    *,
+    task: str,
+    dataset_source: str,
+    run_name: str | None,
+    epochs: int,
+    batch_size: int,
+    learning_rate: float | None,
+    activate: bool,
+) -> dict[str, Any]:
+    return start_training_job(
+        task=task,
+        dataset_source=dataset_source,
+        run_name=run_name,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        activate=activate,
+    )
 
 
 def run_accepted_pipeline_refresh(limit: int | None = None) -> dict[str, Any]:
@@ -424,6 +450,7 @@ def get_model_summary() -> dict[str, Any]:
         "relation": get_relation_status(),
         "accepted_pipeline": get_accepted_pipeline_status(),
         "registry": get_model_registry_status(),
+        "training_jobs": get_training_jobs_status(limit=10),
     }
 
 

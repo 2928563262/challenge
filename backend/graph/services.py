@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import os
 
 from django.conf import settings
 
@@ -13,6 +14,8 @@ from .registry import activate_graph, get_active_graph, get_registry_path, list_
 
 GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph"
 DEFAULT_REVIEWED_GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph-reviewed"
+GRAPH_SYNC_DIR = Path(settings.DATA_DIR) / "processed" / "graph-sync"
+NEO4J_SYNC_REPORT_PATH = GRAPH_SYNC_DIR / "neo4j_sync_report.json"
 
 SHOWCASE_CASES = [
     {
@@ -51,6 +54,10 @@ SHOWCASE_CASES = [
 
 
 class GraphDataUnavailableError(RuntimeError):
+    pass
+
+
+class GraphSyncError(RuntimeError):
     pass
 
 
@@ -98,7 +105,71 @@ def activate_graph_version(graph_id: str) -> dict[str, Any]:
     return activate_graph(graph_id)
 
 
-def run_reviewed_graph_refresh(statuses: list[str] | None = None, limit: int | None = None) -> dict[str, Any]:
+def _write_neo4j_sync_report(payload: dict[str, Any]) -> None:
+    GRAPH_SYNC_DIR.mkdir(parents=True, exist_ok=True)
+    NEO4J_SYNC_REPORT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def get_graph_sync_status() -> dict[str, Any]:
+    if not NEO4J_SYNC_REPORT_PATH.exists():
+        return {
+            "exists": False,
+            "path": str(NEO4J_SYNC_REPORT_PATH),
+            "report": None,
+        }
+    return {
+        "exists": True,
+        "path": str(NEO4J_SYNC_REPORT_PATH),
+        "report": json.loads(NEO4J_SYNC_REPORT_PATH.read_text(encoding="utf-8")),
+    }
+
+
+def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
+    from scripts.import_graph_to_neo4j import import_graph
+
+    active_graph = get_active_graph_record()
+    target_graph_dir = graph_dir or Path(str(active_graph.get("output_dir") or GRAPH_DIR))
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    username = os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
+    batch_size = int(os.getenv("NEO4J_BATCH_SIZE", "500"))
+
+    try:
+        summary = import_graph(
+            graph_dir=target_graph_dir,
+            uri=uri,
+            username=username,
+            password=password,
+            database=database,
+            batch_size=batch_size,
+        )
+    except Exception as exc:  # pragma: no cover
+        payload = {
+            "ok": False,
+            "detail": str(exc),
+            "graph_version": active_graph,
+            "graph_dir": str(target_graph_dir),
+            "uri": uri,
+            "database": database,
+        }
+        _write_neo4j_sync_report(payload)
+        raise GraphSyncError(str(exc)) from exc
+
+    payload = {
+        "ok": True,
+        "detail": "neo4j sync completed.",
+        "graph_version": active_graph,
+        "graph_dir": str(target_graph_dir),
+        "uri": uri,
+        "database": database,
+        "summary": summary,
+    }
+    _write_neo4j_sync_report(payload)
+    return payload
+
+
+def run_reviewed_graph_refresh(statuses: list[str] | None = None, limit: int | None = None, sync_neo4j: bool = False) -> dict[str, Any]:
     from scripts.export_reviewed_graph_csv import export_reviewed_graph
 
     summary = export_reviewed_graph(
@@ -109,11 +180,14 @@ def run_reviewed_graph_refresh(statuses: list[str] | None = None, limit: int | N
         activate=True,
     )
     load_graph_data.cache_clear()
-    return {
+    payload = {
         "summary": summary,
         "registry": get_graph_registry_status(),
         "graph_summary": build_graph_summary(),
     }
+    if sync_neo4j:
+        payload["neo4j_sync"] = run_neo4j_sync(Path(summary["output_dir"]))
+    return payload
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:

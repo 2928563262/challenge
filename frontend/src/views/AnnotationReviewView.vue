@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
+import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel, formatStatusLabel } from "../i18n";
 import {
   fetchAnnotationCandidateDetail,
@@ -96,6 +97,36 @@ function formatEntityType(type: string) {
 
 function formatRelationLabel(label: string) {
   return formatRelationTypeLabel(label);
+}
+
+function summarizeAutoPipelineRefresh(meta?: AnnotationCandidateRecord["auto_pipeline_refresh"]) {
+  if (!meta || !meta.triggered) {
+    return "";
+  }
+  if (!meta.ok) {
+    return `自动回流失败：${meta.detail || "未知错误"}`;
+  }
+  const parts = [`自动回流已执行：accepted ${meta.export_record_count ?? 0} 条`];
+  if (typeof meta.merge_ner_added_count === "number") {
+    parts.push(`NER +${meta.merge_ner_added_count}`);
+  }
+  if (typeof meta.merge_relation_added_count === "number") {
+    parts.push(`RE +${meta.merge_relation_added_count}`);
+  }
+  return parts.join("，");
+}
+
+function summarizeAutoGraphRefresh(meta?: AnnotationCandidateRecord["auto_graph_refresh"]) {
+  if (!meta || !meta.triggered) {
+    return "";
+  }
+  if (!meta.ok) {
+    return `图谱自动刷新失败：${meta.detail || "未知错误"}`;
+  }
+  const name = meta.run_name || "graph-reviewed";
+  const nodes = meta.entity_node_count ?? 0;
+  const relations = meta.entity_relation_count ?? 0;
+  return `图谱已自动刷新：${name}（节点 ${nodes}，关系 ${relations}）`;
 }
 
 function normalizeNumber(value: unknown, fallback = 0) {
@@ -226,7 +257,10 @@ async function updateStatus(status: string) {
     } else {
       records.value = records.value.map((item) => (item.record_id === updated.record_id ? { ...item, ...updated } : item));
     }
-    actionMessage.value = `状态已更新为 ${formatStatus(status)}。`;
+    const pipelineMessage = summarizeAutoPipelineRefresh(updated.auto_pipeline_refresh);
+    const graphMessage = summarizeAutoGraphRefresh(updated.auto_graph_refresh);
+    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("；");
+    actionMessage.value = combinedMessage ? `状态已更新为 ${formatStatus(status)}。${combinedMessage}` : `状态已更新为 ${formatStatus(status)}。`;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
       errorMessage.value = String(error.response?.data?.detail || "状态更新失败。");
@@ -423,7 +457,10 @@ async function saveEdits() {
     selectedRecord.value = updated;
     syncEditorState(updated);
     records.value = records.value.map((item) => (item.record_id === updated.record_id ? { ...item, ...updated } : item));
-    actionMessage.value = "记录内容已保存，节点和关系变更已同步写入候选记录。";
+    const pipelineMessage = summarizeAutoPipelineRefresh(updated.auto_pipeline_refresh);
+    const graphMessage = summarizeAutoGraphRefresh(updated.auto_graph_refresh);
+    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("；");
+    actionMessage.value = combinedMessage ? `记录已保存。${combinedMessage}` : "记录内容已保存，节点和关系变更已同步写入候选记录。";
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
       errorMessage.value = String(error.response?.data?.detail || "保存修改失败。");
@@ -516,8 +553,12 @@ watch(
           </button>
         </div>
 
-        <p v-if="errorMessage && !selectedRecord" class="status-text error">{{ errorMessage }}</p>
-        <p v-else-if="loadingList" class="status-text">正在加载候选记录...</p>
+        <StatePanel v-if="errorMessage && !selectedRecord" tone="error">
+          <p>{{ errorMessage }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="loadingList" tone="info">
+          <p>正在加载候选记录...</p>
+        </StatePanel>
         <div v-else class="entity-result-list annotation-record-list">
           <button
             v-for="record in records"
@@ -548,10 +589,18 @@ watch(
           </button>
         </div>
 
-        <p v-if="errorMessage && selectedRecord" class="status-text error">{{ errorMessage }}</p>
-        <p v-else-if="actionMessage" class="status-text">{{ actionMessage }}</p>
-        <p v-if="loadingDetail" class="status-text">正在加载详情...</p>
-        <p v-else-if="!selectedRecord" class="status-text">先从左侧选择一条候选记录。</p>
+        <StatePanel v-if="errorMessage && selectedRecord" tone="error">
+          <p>{{ errorMessage }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="actionMessage" tone="success">
+          <p>{{ actionMessage }}</p>
+        </StatePanel>
+        <StatePanel v-if="loadingDetail" tone="info">
+          <p>正在加载详情...</p>
+        </StatePanel>
+        <StatePanel v-else-if="!selectedRecord" tone="warning">
+          <p>先从左侧选择一条候选记录。</p>
+        </StatePanel>
 
         <template v-else>
           <div class="entity-focus-card annotation-summary-card">

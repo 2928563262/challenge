@@ -5,10 +5,13 @@ from rest_framework.views import APIView
 from .services import (
     activate_graph_version,
     GraphDataUnavailableError,
+    GraphSyncError,
     build_graph_showcase,
     build_graph_summary,
     get_graph_registry_status,
+    get_graph_sync_status,
     get_entity_detail,
+    run_neo4j_sync,
     run_reviewed_graph_refresh,
     search_entities,
 )
@@ -45,6 +48,7 @@ class ReviewedGraphRefreshView(APIView):
     def post(self, request):
         statuses = request.data.get("statuses")
         limit = request.data.get("limit")
+        sync_neo4j = bool(request.data.get("sync_neo4j", False))
 
         if statuses in (None, ""):
             normalized_statuses = ["accepted", "reviewed"]
@@ -62,7 +66,21 @@ class ReviewedGraphRefreshView(APIView):
         else:
             parsed_limit = limit
 
-        return Response(run_reviewed_graph_refresh(statuses=normalized_statuses, limit=parsed_limit))
+        try:
+            return Response(run_reviewed_graph_refresh(statuses=normalized_statuses, limit=parsed_limit, sync_neo4j=sync_neo4j))
+        except GraphSyncError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class GraphNeo4jSyncView(APIView):
+    def get(self, request):
+        return Response(get_graph_sync_status())
+
+    def post(self, request):
+        try:
+            return Response({"sync": run_neo4j_sync(), "status": get_graph_sync_status()})
+        except GraphSyncError as exc:
+            return Response({"detail": str(exc), "status": get_graph_sync_status()}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 class GraphShowcaseView(APIView):

@@ -59,8 +59,8 @@ button {
 
 .hero-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
-  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
   padding: 28px;
   border-radius: 30px;
 }
@@ -74,7 +74,6 @@ button {
 .breakdown-item span,
 .top-entity-card span,
 .entity-result-head span,
-.showcase-block span,
 .column-title {
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -90,9 +89,9 @@ button {
 }
 
 .hero-copy h1 {
-  font-size: clamp(2.3rem, 5.5vw, 4.8rem);
-  line-height: 1.04;
-  max-width: 11ch;
+  font-size: clamp(2.1rem, 4.2vw, 3.6rem);
+  line-height: 1.12;
+  max-width: none;
 }
 
 .hero-description,
@@ -101,34 +100,9 @@ button {
 .evidence-card p,
 .top-entity-card p,
 .entity-result-card p,
-.showcase-block p,
 .chain-item,
 .relation-item p {
   color: #5d4a38;
-}
-
-.showcase-card {
-  display: flex;
-  align-items: stretch;
-}
-
-.showcase-block {
-  width: 100%;
-  padding: 22px;
-  border-radius: 24px;
-  background: linear-gradient(160deg, #6a7d65 0%, #415548 100%);
-  color: #f8efe3;
-}
-
-.showcase-block span {
-  color: rgba(248, 239, 227, 0.72);
-}
-
-.showcase-block strong {
-  display: block;
-  margin-top: 12px;
-  font-size: 1.8rem;
-  line-height: 1.15;
 }
 
 .stats-grid,
@@ -472,6 +446,50 @@ button {
 
 .status-text.error {
   color: #b5452f;
+}
+
+.state-panel {
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(104, 76, 49, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: #5d4a38;
+}
+
+.state-panel__title {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.92rem;
+}
+
+.state-panel__body {
+  line-height: 1.6;
+}
+
+.state-panel__body p {
+  margin: 0;
+}
+
+.state-panel--info {
+  background: rgba(236, 243, 247, 0.82);
+  border-color: rgba(81, 118, 142, 0.2);
+}
+
+.state-panel--success {
+  background: rgba(236, 246, 238, 0.82);
+  border-color: rgba(82, 127, 87, 0.2);
+}
+
+.state-panel--warning {
+  background: rgba(251, 245, 234, 0.9);
+  border-color: rgba(170, 128, 63, 0.2);
+}
+
+.state-panel--error {
+  background: rgba(250, 239, 236, 0.9);
+  border-color: rgba(181, 69, 47, 0.18);
+  color: #8f3d2b;
 }
 
 @media (max-width: 1080px) {

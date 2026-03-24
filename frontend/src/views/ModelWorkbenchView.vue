@@ -1,10 +1,11 @@
 ﻿<script setup lang="ts">
 import axios from "axios";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
+import StatePanel from "../components/common/StatePanel.vue";
 import { formatBioLabel, formatEntityTypeLabel, formatRelationTypeLabel, formatSplitName } from "../i18n";
-import { activateModel, fetchModelSummary, predictNer, predictRelation, refreshAcceptedPipeline } from "../services/api";
+import { activateModel, fetchModelSummary, fetchTrainingJobs, predictNer, predictRelation, refreshAcceptedPipeline, startTrainingJob } from "../services/api";
 import type {
   ArtifactReport,
   DatasetSplitSummary,
@@ -13,12 +14,14 @@ import type {
   NerPrediction,
   NerPredictionEntity,
   RelationPrediction,
+  TrainingJobsStatus,
 } from "../types/api";
 
 const { t } = useI18n();
 const modelSummary = ref<ModelSummary | null>(null);
 const prediction = ref<NerPrediction | null>(null);
 const relationPrediction = ref<RelationPrediction | null>(null);
+const trainingJobs = ref<TrainingJobsStatus | null>(null);
 
 const inferenceText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主之。");
 const relationText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主之。");
@@ -32,10 +35,21 @@ const refreshingPipeline = ref(false);
 const predicting = ref(false);
 const relationPredicting = ref(false);
 const activatingTask = ref<"ner" | "relation" | "">("");
+const startingTraining = ref(false);
+const loadingTrainingJobs = ref(false);
 const summaryError = ref("");
 const predictError = ref("");
 const relationPredictError = ref("");
 const pipelineMessage = ref("");
+const trainingMessage = ref("");
+
+const trainingTask = ref<"ner" | "relation">("ner");
+const trainingDatasetSource = ref<"baseline" | "merged">("merged");
+const trainingEpochs = ref(3);
+const trainingBatchSize = ref(4);
+const trainingActivate = ref(false);
+const trainingRunName = ref("");
+let trainingJobsTimer: number | null = null;
 
 const nerSplitEntries = computed(() => Object.entries(modelSummary.value?.ner.dataset_summary ?? {}));
 const relationSplitEntries = computed(() => Object.entries(modelSummary.value?.relation.dataset_summary ?? {}));
@@ -44,6 +58,8 @@ const activeNerModel = computed(() => modelSummary.value?.registry.active.ner ??
 const activeRelationModel = computed(() => modelSummary.value?.registry.active.relation ?? null);
 const nerModelRuns = computed(() => modelSummary.value?.registry.ner ?? []);
 const relationModelRuns = computed(() => modelSummary.value?.registry.relation ?? []);
+const trainingJobList = computed(() => trainingJobs.value?.jobs ?? []);
+const runningTrainingCount = computed(() => trainingJobs.value?.running_count ?? 0);
 
 const entityTypeOptions = [
   { label: formatEntityTypeLabel("SYNDROME"), value: "SYNDROME" },
@@ -63,6 +79,19 @@ function formatDateTime(value: string) {
     return "未记录";
   }
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatTrainingStatus(status: string) {
+  if (status === "running") {
+    return "运行中";
+  }
+  if (status === "succeeded") {
+    return "已完成";
+  }
+  if (status === "failed") {
+    return "失败";
+  }
+  return status;
 }
 
 function formatDatasetSource(source: string) {
@@ -150,11 +179,41 @@ async function loadModelSummary() {
   summaryError.value = "";
   try {
     modelSummary.value = await fetchModelSummary();
+    trainingJobs.value = modelSummary.value.training_jobs;
   } catch {
     summaryError.value = "模型摘要加载失败，请确认 Django 服务已经启动。";
   } finally {
     loadingSummary.value = false;
   }
+}
+
+async function loadTrainingJobs() {
+  loadingTrainingJobs.value = true;
+  summaryError.value = "";
+  try {
+    trainingJobs.value = await fetchTrainingJobs(20);
+  } catch {
+    summaryError.value = "训练任务列表加载失败，请确认后端服务正常。";
+  } finally {
+    loadingTrainingJobs.value = false;
+  }
+}
+
+function stopTrainingJobsPolling() {
+  if (trainingJobsTimer !== null) {
+    window.clearInterval(trainingJobsTimer);
+    trainingJobsTimer = null;
+  }
+}
+
+function startTrainingJobsPolling() {
+  stopTrainingJobsPolling();
+  trainingJobsTimer = window.setInterval(async () => {
+    if (loadingTrainingJobs.value || startingTraining.value) {
+      return;
+    }
+    await loadTrainingJobs();
+  }, 10000);
 }
 
 async function runAcceptedPipelineRefresh() {
@@ -201,6 +260,39 @@ async function runModelActivation(task: "ner" | "relation", modelId: string) {
     }
   } finally {
     activatingTask.value = "";
+  }
+}
+
+async function runTrainingStart() {
+  if (trainingEpochs.value <= 0 || trainingBatchSize.value <= 0) {
+    summaryError.value = "训练轮数和批大小必须大于 0。";
+    return;
+  }
+
+  startingTraining.value = true;
+  summaryError.value = "";
+  trainingMessage.value = "";
+  try {
+    const payload = await startTrainingJob({
+      task: trainingTask.value,
+      datasetSource: trainingDatasetSource.value,
+      epochs: trainingEpochs.value,
+      batchSize: trainingBatchSize.value,
+      runName: trainingRunName.value.trim() || undefined,
+      activate: trainingActivate.value,
+    });
+    trainingJobs.value = payload.jobs;
+    await loadModelSummary();
+    trainingMessage.value = `已启动${trainingTask.value.toUpperCase()}训练任务：${payload.job.run_name}`;
+    trainingRunName.value = "";
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      summaryError.value = String(error.response?.data?.detail || "启动训练任务失败。");
+    } else {
+      summaryError.value = "启动训练任务失败。";
+    }
+  } finally {
+    startingTraining.value = false;
   }
 }
 
@@ -269,6 +361,11 @@ async function runRelationPrediction() {
 
 onMounted(async () => {
   await loadModelSummary();
+  startTrainingJobsPolling();
+});
+
+onBeforeUnmount(() => {
+  stopTrainingJobsPolling();
 });
 </script>
 
@@ -292,8 +389,15 @@ onMounted(async () => {
       </div>
     </section>
 
-    <p v-if="summaryError" class="status-text error">{{ summaryError }}</p>
-    <p v-else-if="pipelineMessage" class="status-text">{{ pipelineMessage }}</p>
+    <StatePanel v-if="summaryError" tone="error">
+      <p>{{ summaryError }}</p>
+    </StatePanel>
+    <StatePanel v-else-if="pipelineMessage" tone="success">
+      <p>{{ pipelineMessage }}</p>
+    </StatePanel>
+    <StatePanel v-else-if="trainingMessage" tone="success">
+      <p>{{ trainingMessage }}</p>
+    </StatePanel>
 
     <section class="content-grid model-grid">
       <article class="panel">
@@ -373,6 +477,83 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
+            <p class="panel-kicker">训练任务</p>
+            <h2>一键启动与状态跟踪</h2>
+          </div>
+          <button class="ghost-button" type="button" :disabled="loadingTrainingJobs" @click="loadTrainingJobs">
+            {{ loadingTrainingJobs ? "刷新中..." : "刷新任务状态" }}
+          </button>
+        </div>
+
+        <form class="model-form" @submit.prevent="runTrainingStart">
+          <div class="relation-form-grid">
+            <div class="relation-form-block">
+              <label>训练任务</label>
+              <select v-model="trainingTask">
+                <option value="ner">NER</option>
+                <option value="relation">RE</option>
+              </select>
+              <label>数据来源</label>
+              <select v-model="trainingDatasetSource">
+                <option value="merged">合并训练集</option>
+                <option value="baseline">基础训练集</option>
+              </select>
+            </div>
+
+            <div class="relation-form-block">
+              <label>训练轮数</label>
+              <input v-model.number="trainingEpochs" type="number" min="1" />
+              <label>批大小</label>
+              <input v-model.number="trainingBatchSize" type="number" min="1" />
+            </div>
+          </div>
+
+          <div class="relation-form-block">
+            <label>运行名称（可选）</label>
+            <input v-model="trainingRunName" type="text" placeholder="留空则自动生成 run_name" />
+          </div>
+
+          <label class="selection-strip">
+            <input v-model="trainingActivate" type="checkbox" />
+            训练完成后自动设为默认模型
+          </label>
+
+          <div class="cta-row compact-cta-row">
+            <button class="primary-button" type="submit" :disabled="startingTraining">
+              {{ startingTraining ? "启动中..." : "启动训练任务" }}
+            </button>
+          </div>
+        </form>
+
+        <div class="dataset-split-grid">
+          <article class="dataset-split-card">
+            <span>运行中任务数</span>
+            <strong>{{ runningTrainingCount }}</strong>
+            <p>任务状态会在刷新后更新。</p>
+          </article>
+        </div>
+
+        <div v-if="trainingJobList.length" class="registry-list">
+          <div v-for="job in trainingJobList" :key="job.id" class="registry-row">
+            <div>
+              <strong>{{ job.run_name }}</strong>
+              <p>{{ job.task.toUpperCase() }} · {{ job.dataset_source === "merged" ? "合并训练集" : "基础训练集" }} · {{ formatTrainingStatus(job.status) }}</p>
+              <p>参数：{{ job.epochs }} epoch · batch {{ job.batch_size }} · {{ job.activate ? "完成后激活" : "不自动激活" }}</p>
+              <p>创建时间：{{ formatDateTime(job.created_at) }}</p>
+              <p v-if="job.finished_at">完成时间：{{ formatDateTime(job.finished_at) }}</p>
+              <p>日志文件：{{ job.log_path }}</p>
+              <p v-if="job.error_message">失败原因：{{ job.error_message }}</p>
+            </div>
+          </div>
+        </div>
+        <StatePanel v-else tone="info">
+          <p>当前没有训练任务记录。</p>
+        </StatePanel>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header compact-header">
+          <div>
             <p class="panel-kicker">默认模型</p>
             <h2>当前生效版本</h2>
           </div>
@@ -412,7 +593,9 @@ onMounted(async () => {
                 </button>
               </div>
             </div>
-            <p v-else class="status-text">暂无已注册的 NER 训练记录。</p>
+            <StatePanel v-else tone="warning">
+              <p>暂无已注册的 NER 训练记录。</p>
+            </StatePanel>
           </article>
 
           <article class="dataset-split-card">
@@ -433,7 +616,9 @@ onMounted(async () => {
                 </button>
               </div>
             </div>
-            <p v-else class="status-text">暂无已注册的 RE 训练记录。</p>
+            <StatePanel v-else tone="warning">
+              <p>暂无已注册的 RE 训练记录。</p>
+            </StatePanel>
           </article>
         </div>
       </article>
@@ -496,10 +681,12 @@ onMounted(async () => {
           </div>
         </form>
 
-        <p v-if="predictError" class="status-text error">{{ predictError }}</p>
-        <p v-else-if="!prediction" class="status-text">
-          如果这里返回 “checkpoint not found”，说明模型数据链路已经通了，但还需要按工作台里的命令训练并导出检查点。
-        </p>
+        <StatePanel v-if="predictError" tone="error">
+          <p>{{ predictError }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="!prediction" tone="info">
+          <p>如果这里返回 “checkpoint not found”，说明模型数据链路已经通了，但还需要按训练流程导出检查点。</p>
+        </StatePanel>
 
         <template v-else>
           <div class="entity-chip-list">
@@ -565,10 +752,12 @@ onMounted(async () => {
           </div>
         </form>
 
-        <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
-        <p v-else-if="!relationPrediction" class="status-text">
-          先从上面的 NER 结果中快速填充实体，或者手动输入头尾实体。当前接口会优先使用关系基线检查点。
-        </p>
+        <StatePanel v-if="relationPredictError" tone="error">
+          <p>{{ relationPredictError }}</p>
+        </StatePanel>
+        <StatePanel v-else-if="!relationPrediction" tone="info">
+          <p>先从上面的 NER 结果中快速填充实体，或者手动输入头尾实体。当前接口会优先使用关系基线检查点。</p>
+        </StatePanel>
 
         <template v-else>
           <div class="relation-result-card">

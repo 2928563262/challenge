@@ -1,9 +1,10 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from .models import AnnotationCandidate
+from annotation.models import AnnotationCandidate
 
 
 class AnnotationApiTests(TestCase):
@@ -77,7 +78,9 @@ class AnnotationApiTests(TestCase):
         self.assertEqual(payload["record_id"], candidate.record_id)
         self.assertIn("session_payload", payload)
 
-    def test_patch_candidate_status_updates_record(self):
+    @patch("annotation.views._run_reviewed_graph_refresh_safe")
+    @patch("annotation.views._run_accepted_pipeline_refresh_safe")
+    def test_patch_candidate_status_updates_record(self, _pipeline_mock, _graph_mock):
         candidate = AnnotationCandidate.objects.create(source_text="?", session_payload={"node_count": 1, "edge_count": 0})
 
         response = self.client.patch(
@@ -138,6 +141,80 @@ class AnnotationApiTests(TestCase):
         self.assertEqual(candidate.node_count, 2)
         self.assertEqual(candidate.edge_count, 1)
         self.assertEqual(candidate.session_payload["text"], "新文本")
+
+
+    @patch("annotation.views._run_reviewed_graph_refresh_safe")
+    @patch("annotation.views._run_accepted_pipeline_refresh_safe")
+    def test_patch_candidate_status_to_accepted_triggers_auto_refresh(self, refresh_mock, graph_refresh_mock):
+        refresh_mock.return_value = {"triggered": True, "ok": True, "export_record_count": 9}
+        graph_refresh_mock.return_value = {"triggered": True, "ok": True, "run_name": "graph-reviewed"}
+        candidate = AnnotationCandidate.objects.create(source_text="?", session_payload={"node_count": 1, "edge_count": 0})
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {"status": "accepted"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("auto_pipeline_refresh", payload)
+        self.assertIn("auto_graph_refresh", payload)
+        self.assertTrue(payload["auto_pipeline_refresh"]["ok"])
+        self.assertTrue(payload["auto_graph_refresh"]["ok"])
+        refresh_mock.assert_called_once()
+        graph_refresh_mock.assert_called_once()
+
+    @patch("annotation.views._run_reviewed_graph_refresh_safe")
+    @patch("annotation.views._run_accepted_pipeline_refresh_safe")
+    def test_patch_accepted_candidate_payload_triggers_auto_refresh(self, refresh_mock, graph_refresh_mock):
+        refresh_mock.return_value = {"triggered": True, "ok": True, "export_record_count": 10}
+        graph_refresh_mock.return_value = {"triggered": True, "ok": True, "run_name": "graph-reviewed"}
+        candidate = AnnotationCandidate.objects.create(
+            source_text="demo",
+            status="accepted",
+            session_payload={"text": "demo", "node_count": 1, "edge_count": 0, "nodes": [], "edges": []},
+        )
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {
+                "session_payload": {
+                    "text": "demo2",
+                    "node_count": 1,
+                    "edge_count": 0,
+                    "nodes": [{"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3}],
+                    "edges": [],
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("auto_pipeline_refresh", payload)
+        self.assertIn("auto_graph_refresh", payload)
+        self.assertTrue(payload["auto_pipeline_refresh"]["ok"])
+        self.assertTrue(payload["auto_graph_refresh"]["ok"])
+        refresh_mock.assert_called_once()
+        graph_refresh_mock.assert_called_once()
+
+    @patch("annotation.views._run_reviewed_graph_refresh_safe")
+    def test_patch_candidate_status_to_reviewed_triggers_graph_refresh(self, graph_refresh_mock):
+        graph_refresh_mock.return_value = {"triggered": True, "ok": True, "run_name": "graph-reviewed"}
+        candidate = AnnotationCandidate.objects.create(source_text="?", session_payload={"node_count": 1, "edge_count": 0})
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {"status": "reviewed"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("auto_graph_refresh", payload)
+        self.assertTrue(payload["auto_graph_refresh"]["ok"])
+        graph_refresh_mock.assert_called_once()
 
 
 class AnnotationExportTests(TestCase):

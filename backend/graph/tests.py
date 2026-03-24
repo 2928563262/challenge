@@ -146,4 +146,46 @@ class GraphApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["summary"]["stats"]["input_record_count"], 9)
-        refresh_mock.assert_called_once_with(statuses=["accepted"], limit=10)
+        refresh_mock.assert_called_once_with(statuses=["accepted"], limit=10, sync_neo4j=False)
+
+    def test_reviewed_graph_refresh_supports_optional_neo4j_sync(self):
+        with patch("graph.views.run_reviewed_graph_refresh") as refresh_mock:
+            refresh_mock.return_value = {
+                "summary": {"stats": {"input_record_count": 9}},
+                "registry": {"active": {"id": "graph-1"}},
+                "graph_summary": {"entity_node_count": 20},
+                "neo4j_sync": {"ok": True},
+            }
+
+            response = self.client.post(
+                "/api/v1/graph/datasets/reviewed/refresh/",
+                {"statuses": ["accepted"], "limit": 10, "sync_neo4j": True},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["neo4j_sync"]["ok"])
+        refresh_mock.assert_called_once_with(statuses=["accepted"], limit=10, sync_neo4j=True)
+
+    def test_graph_neo4j_sync_endpoint_returns_status(self):
+        with patch("graph.views.get_graph_sync_status") as status_mock:
+            status_mock.return_value = {"exists": True, "path": "report.json", "report": {"ok": True}}
+
+            response = self.client.get("/api/v1/graph/neo4j/sync/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["exists"])
+
+    def test_graph_neo4j_sync_endpoint_runs_sync(self):
+        with patch("graph.views.run_neo4j_sync") as sync_mock, patch("graph.views.get_graph_sync_status") as status_mock:
+            sync_mock.return_value = {"ok": True, "summary": {"entity_nodes": 10}}
+            status_mock.return_value = {"exists": True, "path": "report.json", "report": {"ok": True}}
+
+            response = self.client.post("/api/v1/graph/neo4j/sync/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["sync"]["ok"])
+        sync_mock.assert_called_once_with()
