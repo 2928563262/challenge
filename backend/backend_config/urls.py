@@ -9,4 +9,5 @@ urlpatterns = [
     path("api/v1/model/", include("modeling.urls")),
     path("api/v1/annotation/", include("annotation.urls")),
     path("api/v1/qa/", include("qa.urls")),
+    path("api/v1/stats/", include("stats.urls")),
 ]

@@ -4,14 +4,14 @@ import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
 
-import { fetchGraphSummary, fetchGraphEntityDetail, searchGraphEntities, searchCorpus } from "../services/api";
-import type { CorpusEntry, GraphEntity, GraphEntityDetail, GraphRelation, GraphSummary } from "../types/api";
+import { fetchGraphSummary, fetchGraphEntityDetail, searchGraphEntities, searchCorpus, fetchStatsOverview } from "../services/api";
+import type { CorpusEntry, GraphEntity, GraphEntityDetail, GraphRelation, GraphSummary, StatsOverview } from "../types/api";
 
 const router = useRoute();
 const route = useRouter();
 
 // ============ 统计图表相关状态 ============
-const summary = ref<GraphSummary | null>(null);
+const summary = ref<StatsOverview | null>(null);
 const loading = ref(false);
 const errorMessage = ref("");
 
@@ -58,13 +58,13 @@ const entityTypeLabels: Record<string, string> = {
 // ============ 统计卡片计算属性（基于检索结果） ============
 const dynamicStatsCards = computed(() => {
   if (searchResults.value.length === 0 && summary.value) {
-    // 没有检索时显示整体统计
-    const s = summary.value;
+    // 没有检索时显示整体统计（使用新接口数据）
+    const kpi = summary.value.kpi;
     return [
-      { label: "清洗后条文", value: s.input_record_count?.toLocaleString("zh-CN") || "0", icon: "📄" },
-      { label: "知识节点", value: s.entity_node_count?.toLocaleString("zh-CN") || "0", icon: "🔷" },
-      { label: "图谱关系", value: s.entity_relation_count?.toLocaleString("zh-CN") || "0", icon: "🔗" },
-      { label: "原文证据边", value: s.clause_mention_count?.toLocaleString("zh-CN") || "0", icon: "📖" },
+      { label: "清洗后条文", value: kpi.article_count?.toLocaleString("zh-CN") || "0", icon: "📄" },
+      { label: "知识节点", value: kpi.entity_count?.toLocaleString("zh-CN") || "0", icon: "🔷" },
+      { label: "图谱关系", value: kpi.relation_count?.toLocaleString("zh-CN") || "0", icon: "🔗" },
+      { label: "原文证据边", value: kpi.clause_mention_count?.toLocaleString("zh-CN") || "0", icon: "📖" },
     ];
   }
   // 检索后显示检索相关统计
@@ -96,31 +96,43 @@ const dynamicStatsCards = computed(() => {
 
 // ============ 关系类型分布（用于环形图） ============
 const relationTypeDistribution = computed(() => {
-  return Object.entries(relationTypeCounts.value).map(([type, count]) => ({
-    name: type,
-    value: count,
-  }));
+  // 有搜索时，使用关系统计 counts（从已加载的实体详情中统计）
+  if (Object.keys(relationTypeCounts.value).length > 0) {
+    return Object.entries(relationTypeCounts.value).map(([type, count]) => ({
+      name: type,
+      value: count,
+    }));
+  }
+  // 无搜索时，使用 summary 中的关系统计
+  else if (summary.value?.relation_type_breakdown) {
+    return Object.entries(summary.value.relation_type_breakdown).map(([type, count]) => ({
+      name: type,
+      value: count,
+    }));
+  }
+  return [];
 });
 
 // ============ 实体关系强度（堆叠柱状图数据） ============
 const entityRelationStrength = computed(() => {
-  if (expandedResults.value.length === 0) return [];
-  
-  const result = expandedResults.value.slice(0, 15).map(entity => {
-    const detail = entityDetailsMap.value.get(entity.entity_id);
-    const outgoingCount = detail?.outgoing_relations.length || 0;
-    const incomingCount = detail?.incoming_relations.length || 0;
-    
-    return {
-      name: entity.name.length > 12 ? entity.name.substring(0, 12) + "..." : entity.name,
-      type: entityTypeLabels[entity.entity_type] || entity.entity_type,
-      outgoing: outgoingCount,
-      incoming: incomingCount,
-    };
-  });
-  
-  console.log('EntityRelationStrength computed:', result);
-  return result;
+  // 有搜索时，使用 expandedResults 中的实体
+  if (expandedResults.value.length > 0) {
+    return expandedResults.value.slice(0, 15).map(entity => {
+      const detail = entityDetailsMap.value.get(entity.entity_id);
+      const outgoingCount = detail?.outgoing_relations.length || 0;
+      const incomingCount = detail?.incoming_relations.length || 0;
+      
+      return {
+        name: entity.name.length > 12 ? entity.name.substring(0, 12) + "..." : entity.name,
+        type: entityTypeLabels[entity.entity_type] || entity.entity_type,
+        outgoing: outgoingCount,
+        incoming: incomingCount,
+      };
+    });
+  }
+  // 无搜索时，使用 summary.top_entities 的整体数据（但没有详情，无法知道出边/入边数量）
+  // 这种情况下返回空，图表可以不显示
+  return [];
 });
 
 // ============ 词云数据 ============
@@ -137,19 +149,38 @@ const wordCloudData = computed(() => {
 
 // ============ 方剂分布（用于饼图） ============
 const formulaDistribution = computed(() => {
-  if (expandedResults.value.length === 0) return [];
-
   const formulaCounts: Record<string, number> = {};
-  expandedResults.value
-    .filter(e => e.entity_type === "FORMULA")
-    .forEach(e => {
-      formulaCounts[e.name] = (formulaCounts[e.name] || 0) + e.mention_count;
+  
+  // 场景1: 如果已执行搜索（有 expandedResults），统计检索相关的方剂
+  if (expandedResults.value.length > 0 || searchResults.value.length > 0) {
+    // 统计 expandedResults 中的所有 FORMULA
+    expandedResults.value.forEach(e => {
+      if (e.entity_type === "FORMULA") {
+        formulaCounts[e.name] = (formulaCounts[e.name] || 0) + (e.mention_count || 1);
+      }
     });
+
+    // 从 entityDetailsMap 遍历所有关系，收集更多 FORMULA
+    entityDetailsMap.value.forEach((detail) => {
+      [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
+        if (rel.related_entity && rel.related_entity.entity_type === "FORMULA") {
+          const name = rel.related_entity.name;
+          formulaCounts[name] = (formulaCounts[name] || 0) + (rel.related_entity.mention_count || 1);
+        }
+      });
+    });
+  } 
+  // 场景2: 未搜索（初始状态），使用 summary 中的 top_entities_by_type.FORMULA
+  else if (summary.value?.top_entities_by_type?.FORMULA) {
+    summary.value.top_entities_by_type.FORMULA.forEach(f => {
+      formulaCounts[f.name] = f.mention_count || 1;
+    });
+  }
 
   return Object.entries(formulaCounts)
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value)
-    .slice(0, 15); // 最多显示15个
+    .slice(0, 15);
 });
 
 // ============ 关系统计辅助状态 ============
@@ -228,8 +259,6 @@ async function loadEntityDetailsForRelations() {
       // 去重
       const uniqueRelated = Array.from(new Map(allRelatedEntities.map(e => [e.entity_id, e])).values());
       
-      console.log(`Original: ${searchResults.value.length}, Related: ${uniqueRelated.length}`);
-      
       // 限制扩展总量（检索 + 相关 <= 30）
       const maxAdditional = 30 - searchResults.value.length;
       const toLoad = uniqueRelated.slice(0, maxAdditional);
@@ -247,6 +276,28 @@ async function loadEntityDetailsForRelations() {
         expandedResults.value = [...searchResults.value, ...toLoad];
       } else {
         expandedResults.value = searchResults.value;
+      }
+      
+      // 从中已加载实体的关系中收集 FORMULA
+      const formulaCandidates: GraphEntity[] = [];
+      detailsMap.forEach((detail) => {
+        [...detail.incoming_relations, ...detail.outgoing_relations].forEach(rel => {
+          const related = rel.related_entity;
+          if (related && related.entity_type === "FORMULA" && !detailsMap.has(related.entity_id) && !expandedResults.value.find(e => e.entity_id === related.entity_id)) {
+            formulaCandidates.push(related);
+          }
+        });
+      });
+
+      const uniqueFormulaCandidates = Array.from(new Map(formulaCandidates.map(e => [e.entity_id, e])).values());
+      if (uniqueFormulaCandidates.length > 0) {
+        const additionalFormulas = uniqueFormulaCandidates.slice(0, 15);
+        const formulaDetails = await batchLoadEntityDetails(additionalFormulas);
+        formulaDetails.detailsMap.forEach((detail, id) => {
+          detailsMap.set(id, detail);
+        });
+        Object.assign(counts, formulaDetails.counts);
+        expandedResults.value = [...expandedResults.value, ...additionalFormulas];
       }
       
       entityDetailsMap.value = detailsMap;
@@ -284,12 +335,6 @@ async function runSearch() {
     searchTotal.value = graphPayload.total;
     corpusResults.value = corpusPayload.results;
     corpusTotal.value = corpusPayload.total;
-
-    console.log('Search results:', {
-      total: graphPayload.total,
-      returned: graphPayload.results.length,
-      entities: graphPayload.results.map(e => ({ id: e.entity_id, name: e.name, type: e.entity_type }))
-    });
 
     if (graphPayload.results.length > 0) {
       await loadEntityDetailsForRelations();
@@ -404,11 +449,18 @@ function initCharts() {
 }
 
 function updateChartOptions() {
+  console.log('updateChartOptions called', {
+    relationTypeDistribution: relationTypeDistribution.value.length,
+    entityRelationStrength: entityRelationStrength.value.length,
+    formulaDistribution: formulaDistribution.value.length
+  });
+  
   // 更新环形图（关系类型分布）
   if (relationPieChart) {
     relationPieChart.setOption({
       series: [{ data: relationTypeDistribution.value }],
     });
+    console.log('relationPieChart updated with', relationTypeDistribution.value.length, 'items');
   }
 
   // 更新堆叠柱状图（实体关系强度）
@@ -420,6 +472,7 @@ function updateChartOptions() {
         { data: entityRelationStrength.value.map((item) => item.incoming) },
       ],
     });
+    console.log('strengthChart updated with', entityRelationStrength.value.length, 'items');
   }
 
   // 更新饼图（方剂分布）
@@ -427,6 +480,7 @@ function updateChartOptions() {
     formulaPieChart.setOption({
       series: [{ data: formulaDistribution.value }],
     });
+    console.log('formulaPieChart updated with', formulaDistribution.value.length, 'items');
   }
 }
 
@@ -445,10 +499,17 @@ async function loadData() {
   loading.value = true;
   errorMessage.value = "";
   try {
-    summary.value = await fetchGraphSummary();
+    const data = await fetchStatsOverview();
+    summary.value = data;
+    console.log('loadData: stats overview loaded', {
+      article_count: data.kpi.article_count,
+      entity_count: data.kpi.entity_count,
+      relation_count: data.kpi.relation_count,
+      top_formulas: data.top_entities_by_type?.FORMULA?.map((f: any) => f.name) || []
+    });
   } catch (error) {
     errorMessage.value = "加载统计数据失败，请确认后端服务已启动。";
-    console.error("Failed to load graph summary:", error);
+    console.error("Failed to load stats overview:", error);
   } finally {
     loading.value = false;
   }
@@ -1124,8 +1185,9 @@ onUnmounted(() => {
   .search-panel {
     position: static;
   }
+}
 
-  @media (max-width: 768px) {
+@media (max-width: 768px) {
   .stats-cards-grid {
     grid-template-columns: repeat(2, 1fr);
   }

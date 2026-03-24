@@ -5,16 +5,21 @@ import type {
   AnnotationCandidatePayload,
   AnnotationCandidateRecord,
   AnnotationCandidateStatusPayload,
+  ClinicalPath,
   CorpusOverview,
   CorpusSearchResult,
+  FormulaAnalysis,
   GraphEntityDetail,
   GraphEntitySearchResult,
   GraphShowcaseResponse,
   GraphSummary,
+  HerbAnalysis,
   ModelSummary,
   NerPrediction,
   QAAnswer,
   RelationPrediction,
+  StatsOverview,
+  TextAnalysis,
 } from "../types/api";
 
 const apiClient = axios.create({
@@ -36,6 +41,35 @@ export async function searchCorpus(keyword: string) {
 
 export async function fetchGraphSummary() {
   const response = await apiClient.get<GraphSummary>("/graph/summary/");
+  return response.data;
+}
+
+export async function fetchStatsOverview() {
+  const response = await apiClient.get<StatsOverview>("/stats/overview/");
+  return response.data;
+}
+
+export async function fetchHerbAnalysis(limit?: number) {
+  const response = await apiClient.get<HerbAnalysis>("/stats/herbs/", {
+    params: { limit: limit || 20 },
+  });
+  return response.data;
+}
+
+export async function fetchFormulaAnalysis(limit?: number) {
+  const response = await apiClient.get<FormulaAnalysis>("/stats/formulas/", {
+    params: { limit: limit || 20 },
+  });
+  return response.data;
+}
+
+export async function fetchClinicalPath() {
+  const response = await apiClient.get<ClinicalPath>("/stats/clinical-path/");
+  return response.data;
+}
+
+export async function fetchTextAnalysis() {
+  const response = await apiClient.get<TextAnalysis>("/stats/text/");
   return response.data;
 }
 
