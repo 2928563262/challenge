@@ -7,13 +7,15 @@ from typing import Any
 
 from django.conf import settings
 
-DEFAULT_NER_BASE_MODEL = os.getenv("NER_BASE_MODEL", "ethanyt/guwenbert-base")
-DEFAULT_RELATION_BASE_MODEL = os.getenv("RELATION_BASE_MODEL", DEFAULT_NER_BASE_MODEL)
+# GLM API 配置
+GLM_API_KEY = os.getenv("GLM_API_KEY", "")
+GLM_API_BASE = os.getenv("GLM_API_BASE", "https://open.bigmodel.cn/api/paas/v4")
+GLM_MODEL = os.getenv("GLM_MODEL", "glm-4-flash")
+
+# 保留原有路径用于兼容，但不再依赖本地模型
 DEFAULT_NER_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "ner" / "guwenbert-ner-baseline" / "best"
 DEFAULT_RELATION_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "relation" / "guwenbert-relation-baseline" / "best"
-DEFAULT_NER_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "ner" / "dataset_manifest.json"
-DEFAULT_RELATION_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "relation" / "dataset_manifest.json"
-RUNTIME_DEPENDENCIES = ["torch", "transformers"]
+RUNTIME_DEPENDENCIES = ["openai"]
 RELATION_TYPE_COMPATIBILITY = {
     ("SYNDROME", "SYMPTOM"): ["SYNDROME_HAS_SYMPTOM", "NO_RELATION"],
     ("SYNDROME", "FORMULA"): ["SYNDROME_TO_FORMULA", "NO_RELATION"],
@@ -50,6 +52,36 @@ def get_relation_model_dir() -> Path:
     if configured:
         return Path(configured)
     return DEFAULT_RELATION_MODEL_DIR
+
+
+def _get_glm_client():
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise ModelUnavailableError("OpenAI client not installed") from exc
+
+    if not GLM_API_KEY:
+        raise ModelUnavailableError("GLM_API_KEY environment variable not set")
+
+    return OpenAI(api_key=GLM_API_KEY, base_url=GLM_API_BASE)
+
+
+def _call_glm(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
+    client = _get_glm_client()
+    try:
+        response = client.chat.completions.create(
+            model=GLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            stream=False,
+            max_tokens=max_tokens,
+            temperature=0.1,
+        )
+        return response.choices[0].message.content or ""
+    except Exception as exc:
+        raise ModelUnavailableError(f"GLM API error: {exc}") from exc
 
 
 def _load_manifest(path: Path) -> dict[str, Any] | None:
@@ -167,24 +199,12 @@ def _mark_entity_pair(text: str, head: dict[str, Any], tail: dict[str, Any]) -> 
     return marked_text
 
 
-def _build_ranked_predictions(probabilities: Any, id2label: dict[int, str]) -> list[dict[str, float | str]]:
-    ranked: list[dict[str, float | str]] = []
-    for index in range(probabilities.shape[0]):
-        ranked.append(
-            {
-                "label": id2label[int(index)],
-                "score": float(probabilities[index].item()),
-            }
-        )
-    ranked.sort(key=lambda item: float(item["score"]), reverse=True)
-    return ranked
-
-
-def _compatible_relation_labels(head_type: str, tail_type: str, labels: list[str]) -> list[str]:
+def _compatible_relation_labels(head_type: str, tail_type: str) -> list[str]:
+    """返回允许的关系类型列表"""
     allowed = RELATION_TYPE_COMPATIBILITY.get((head_type, tail_type))
     if allowed is None:
-        return ["NO_RELATION"] if "NO_RELATION" in labels else []
-    return [label for label in allowed if label in labels]
+        return ["NO_RELATION"]
+    return allowed
 
 
 def _has_formula_trigger(text: str, formula_text: str) -> bool:
@@ -195,103 +215,85 @@ def _has_formula_trigger(text: str, formula_text: str) -> bool:
     return any(candidate in text for candidate in candidates)
 
 
+def _constrain_relation_prediction_simple(head_type: str, tail_type: str, label: str) -> str:
+    """根据实体类型对关系标签进行约束（适用于API输出）"""
+    allowed = _compatible_relation_labels(head_type, tail_type)
+    if label in allowed:
+        return label
+    # 如果预测的标签不在允许列表中，返回 NO_RELATION
+    return "NO_RELATION"
+
+
 def _apply_relation_heuristics(
     text: str,
     head: dict[str, Any],
     tail: dict[str, Any],
-    constrained_result: dict[str, Any],
-) -> dict[str, Any]:
+    label: str,
+    confidence: float,
+) -> tuple[str, float, dict[str, Any]]:
+    """应用启发式规则（仅处理 formula_trigger）"""
+    override = False
+    reason = None
+
     if (
         head.get("type") == "SYNDROME"
         and tail.get("type") == "FORMULA"
-        and "SYNDROME_TO_FORMULA" in constrained_result.get("compatible_labels", [])
+        and "SYNDROME_TO_FORMULA" in _compatible_relation_labels(head["type"], tail["type"])
         and _has_formula_trigger(text, str(tail.get("text") or ""))
     ):
-        boosted = next(
-            (item for item in constrained_result["top_predictions"] if item["label"] == "SYNDROME_TO_FORMULA"),
-            None,
-        )
-        if boosted is None:
-            boosted = {"label": "SYNDROME_TO_FORMULA", "score": 0.0}
-            constrained_result["top_predictions"] = [boosted, *constrained_result["top_predictions"]][:5]
-        constrained_result["label"] = "SYNDROME_TO_FORMULA"
-        constrained_result["confidence"] = float(boosted["score"])
-        constrained_result["heuristic_override"] = True
-        constrained_result["heuristic_reason"] = "formula_trigger"
-        return constrained_result
+        label = "SYNDROME_TO_FORMULA"
+        confidence = max(confidence, 0.8)  # 提信
+        override = True
+        reason = "formula_trigger"
 
-    constrained_result["heuristic_override"] = False
-    constrained_result["heuristic_reason"] = None
-    return constrained_result
-
-
-def _constrain_relation_predictions(
-    probabilities: Any,
-    id2label: dict[int, str],
-    head_type: str,
-    tail_type: str,
-) -> dict[str, Any]:
-    ranked_predictions = _build_ranked_predictions(probabilities, id2label)
-    allowed_labels = _compatible_relation_labels(head_type, tail_type, [str(item["label"]) for item in ranked_predictions])
-
-    constrained_predictions = [item for item in ranked_predictions if str(item["label"]) in allowed_labels]
-    raw_prediction = ranked_predictions[0]
-
-    if constrained_predictions:
-        final_prediction = constrained_predictions[0]
-    else:
-        final_prediction = {"label": "NO_RELATION", "score": 1.0 if raw_prediction["label"] == "NO_RELATION" else 0.0}
-        constrained_predictions = [final_prediction]
-
-    return {
-        "raw_label": str(raw_prediction["label"]),
-        "raw_confidence": float(raw_prediction["score"]),
-        "label": str(final_prediction["label"]),
-        "confidence": float(final_prediction["score"]),
-        "constraint_applied": str(raw_prediction["label"]) != str(final_prediction["label"]),
-        "compatible_labels": allowed_labels,
-        "top_predictions": constrained_predictions[:5],
-    }
+    return label, confidence, {"heuristic_override": override, "heuristic_reason": reason}
 
 
 def get_ner_status() -> dict[str, Any]:
-    model_dir = get_ner_model_dir()
-    manifest = _load_manifest(DEFAULT_NER_DATASET_MANIFEST)
+    """获取 NER 服务状态（使用 GLM API）"""
     missing_dependencies = _missing_dependencies(RUNTIME_DEPENDENCIES)
-    checkpoint_exists = model_dir.exists()
+    api_configured = bool(GLM_API_KEY)
 
     return {
-        "ready": checkpoint_exists and not missing_dependencies,
-        "base_model_name": DEFAULT_NER_BASE_MODEL,
-        "model_dir": str(model_dir),
-        "checkpoint_exists": checkpoint_exists,
-        "dataset_manifest_exists": manifest is not None,
-        "dataset_manifest_path": str(DEFAULT_NER_DATASET_MANIFEST),
+        "ready": api_configured and not missing_dependencies,
+        "base_model_name": GLM_MODEL,
+        "model_type": "glm_api",
+        "checkpoint_exists": api_configured,
+        "dataset_manifest_exists": None,
+        "dataset_manifest_path": None,
         "missing_dependencies": missing_dependencies,
         "required_dependencies": RUNTIME_DEPENDENCIES,
-        "label_list": list(manifest.get("label_list", [])) if manifest else [],
-        "dataset_summary": manifest.get("splits") if manifest else None,
-        "commands": _artifact_commands(),
+        "label_list": [
+            "SYMPTOM", "SYNDROME", "FORMULA", "HERB", "THERAPY", "ADMINISTRATION"
+        ],
+        "dataset_summary": None,
+        "commands": {},
     }
 
 
 def get_relation_status() -> dict[str, Any]:
-    model_dir = get_relation_model_dir()
-    manifest = _load_manifest(DEFAULT_RELATION_DATASET_MANIFEST)
+    """获取关系抽取服务状态（使用 GLM API）"""
     missing_dependencies = _missing_dependencies(RUNTIME_DEPENDENCIES)
-    checkpoint_exists = model_dir.exists()
+    api_configured = bool(GLM_API_KEY)
+
     return {
-        "ready": checkpoint_exists and not missing_dependencies,
-        "base_model_name": DEFAULT_RELATION_BASE_MODEL,
-        "model_dir": str(model_dir),
-        "checkpoint_exists": checkpoint_exists,
-        "dataset_manifest_exists": manifest is not None,
-        "dataset_manifest_path": str(DEFAULT_RELATION_DATASET_MANIFEST),
+        "ready": api_configured and not missing_dependencies,
+        "base_model_name": GLM_MODEL,
+        "model_type": "glm_api",
+        "checkpoint_exists": api_configured,
+        "dataset_manifest_exists": None,
+        "dataset_manifest_path": None,
         "missing_dependencies": missing_dependencies,
         "required_dependencies": RUNTIME_DEPENDENCIES,
-        "label_list": list(manifest.get("label_list", [])) if manifest else [],
-        "dataset_summary": manifest.get("splits") if manifest else None,
-        "commands": _artifact_commands(),
+        "label_list": [
+            "SYNDROME_HAS_SYMPTOM",
+            "SYNDROME_TO_FORMULA",
+            "FORMULA_CONTAINS_HERB",
+            "FORMULA_HAS_ADMINISTRATION",
+            "NO_RELATION",
+        ],
+        "dataset_summary": None,
+        "commands": {},
     }
 
 
@@ -303,83 +305,134 @@ def get_model_summary() -> dict[str, Any]:
 
 
 def predict_ner(text: str) -> dict[str, Any]:
-    model_dir = get_ner_model_dir()
-    if not model_dir.exists():
-        raise ModelUnavailableError(f"NER checkpoint not found: {model_dir}")
+    """使用 GLM-4-flash API 进行命名实体识别"""
+    if not GLM_API_KEY:
+        raise ModelUnavailableError("GLM_API_KEY environment variable not set")
+
+    system_prompt = """你是一个中医文本命名实体识别专家。从《伤寒论》条文中抽取以下实体：
+- SYMPTOM: 症状与体征（如发热、头痛、汗出）
+- SYNDROME: 证候或病机（如太阳病、中风）
+- FORMULA: 方剂名（如桂枝汤、白虎加人参汤）
+- HERB: 中药名（如桂枝、芍药、甘草）
+- THERAPY: 治法（如发汗、下、温针）
+- ADMINISTRATION: 煎服法（如温服一升、日三服）
+
+输出格式为 JSON：
+{
+  "entities": [
+    {"type": "ENTITY_TYPE", "text": "实体文本", "start": 起始位置, "end": 结束位置}
+  ]
+}
+
+注意：start 和 end 是字符级别的位置索引（从0开始）。"""
+
+    user_prompt = f"请从以下条文中抽取实体：\n\n{text}"
 
     try:
-        import torch
-        from transformers import AutoModelForTokenClassification, AutoTokenizer
-    except Exception as exc:  # pragma: no cover
-        raise ModelUnavailableError(f"NER runtime dependencies are unavailable: {exc}") from exc
+        result_text = _call_glm(system_prompt, user_prompt)
+        result = json.loads(result_text)
+        entities = result.get("entities", [])
+    except json.JSONDecodeError:
+        # 尝试从回复中提取 JSON 部分
+        import re
+        match = re.search(r'\{.*\}', result_text, re.DOTALL)
+        if match:
+            result = json.loads(match.group())
+            entities = result.get("entities", [])
+        else:
+            entities = []
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForTokenClassification.from_pretrained(model_dir)
+    # 构建标签序列（用于向后兼容）
     tokens = list(text)
-    encoded = tokenizer(tokens, is_split_into_words=True, return_tensors="pt", truncation=True, max_length=256)
-
-    with torch.no_grad():
-        logits = model(**encoded).logits
-    predictions = logits.argmax(dim=-1).squeeze(0).tolist()
-    word_ids = encoded.word_ids(batch_index=0)
-
-    labels: list[str] = []
-    seen_word_ids = set()
-    for prediction, word_id in zip(predictions, word_ids):
-        if word_id is None or word_id in seen_word_ids:
-            continue
-        labels.append(model.config.id2label[prediction])
-        seen_word_ids.add(word_id)
+    labels = ["O"] * len(tokens)
+    for entity in entities:
+        start = int(entity.get("start", 0))
+        end = int(entity.get("end", 0))
+        etype = entity.get("type", "UNKNOWN")
+        if 0 <= start < end <= len(tokens):
+            labels[start] = f"B-{etype}"
+            for i in range(start + 1, end):
+                if i < len(labels):
+                    labels[i] = f"I-{etype}"
 
     return {
         "text": text,
         "tokens": tokens,
         "labels": labels,
-        "entities": _decode_entities(text, labels),
+        "entities": entities,
     }
 
 
 def predict_relation(text: str, head: dict[str, Any], tail: dict[str, Any]) -> dict[str, Any]:
-    model_dir = get_relation_model_dir()
-    if not model_dir.exists():
-        raise ModelUnavailableError(f"Relation checkpoint not found: {model_dir}")
+    """使用 GLM-4-flash API 进行关系抽取"""
+    if not GLM_API_KEY:
+        raise ModelUnavailableError("GLM_API_KEY environment variable not set")
 
     resolved_head = _resolve_entity_payload(text, head, "head")
     resolved_tail = _resolve_entity_payload(text, tail, "tail")
-    sequence_text = _mark_entity_pair(text, resolved_head, resolved_tail)
-    sequence_text = f"{sequence_text}\nHEAD_TYPE={resolved_head['type']};TAIL_TYPE={resolved_tail['type']}"
+
+    system_prompt = """你是一个中医文本关系抽取专家。根据《伤寒论》条文内容，判断头实体和尾实体之间的关系类型。
+
+可选的实体类型：
+- SYMPTOM: 症状
+- SYNDROME: 证候
+- FORMULA: 方剂
+- HERB: 中药
+- THERAPY: 治法
+- ADMINISTRATION: 煎服法
+
+关系类型：
+- SYNDROME_HAS_SYMPTOM: 证候具有症状
+- SYNDROME_TO_FORMULA: 证候对应方剂
+- FORMULA_CONTAINS_HERB: 方剂包含中药
+- FORMULA_HAS_ADMINISTRATION: 方剂具有煎服法
+- NO_RELATION: 无稳定关系
+
+请根据条文语义判断，输出 JSON：
+{
+  "label": "关系类型",
+  "confidence": 置信度(0-1之间的小数)
+}"""
+
+    user_prompt = f"""条文：{text}
+
+头实体：{resolved_head['text']} (类型: {resolved_head['type']})
+尾实体：{resolved_tail['text']} (类型: {resolved_tail['type']})
+
+请判断两者之间的关系。"""
 
     try:
-        import torch
-        from transformers import AutoModelForSequenceClassification, AutoTokenizer
-    except Exception as exc:  # pragma: no cover
-        raise ModelUnavailableError(f"Relation runtime dependencies are unavailable: {exc}") from exc
+        result_text = _call_glm(system_prompt, user_prompt)
+        result = json.loads(result_text)
+        label = result.get("label", "NO_RELATION")
+        confidence = float(result.get("confidence", 0.5))
+    except (json.JSONDecodeError, ValueError, KeyError):
+        label = "NO_RELATION"
+        confidence = 0.0
 
-    tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
-    encoded = tokenizer(sequence_text, return_tensors="pt", truncation=True, max_length=256)
-
-    with torch.no_grad():
-        logits = model(**encoded).logits
-
-    probabilities = torch.softmax(logits, dim=-1).squeeze(0)
-    constrained_result = _constrain_relation_predictions(
-        probabilities=probabilities,
-        id2label=model.config.id2label,
-        head_type=str(resolved_head["type"]),
-        tail_type=str(resolved_tail["type"]),
+    # 应用类型约束
+    constrained_label = _constrain_relation_prediction_simple(
+        head_type=resolved_head["type"],
+        tail_type=resolved_tail["type"],
+        label=label,
     )
-    constrained_result = _apply_relation_heuristics(
+
+    # 应用启发式规则
+    final_label, final_confidence, heuristic_meta = _apply_relation_heuristics(
         text=text,
         head=resolved_head,
         tail=resolved_tail,
-        constrained_result=constrained_result,
+        label=constrained_label,
+        confidence=confidence,
     )
 
     return {
         "text": text,
         "head": resolved_head,
         "tail": resolved_tail,
-        "sequence_text": sequence_text,
-        **constrained_result,
+        "label": final_label,
+        "confidence": final_confidence,
+        "heuristic_override": heuristic_meta["heuristic_override"],
+        "heuristic_reason": heuristic_meta["heuristic_reason"],
+        "top_predictions": [{"label": final_label, "score": final_confidence}],
     }

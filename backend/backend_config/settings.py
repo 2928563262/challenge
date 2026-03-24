@@ -50,6 +50,7 @@ INSTALLED_APPS = [
     "graph",
     "modeling",
     "annotation",
+    "qa",
 ]
 
 MIDDLEWARE = [
