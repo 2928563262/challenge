@@ -27,11 +27,6 @@ import type {
   ReviewedGraphRefreshResponse,
   GraphShowcaseResponse,
   GraphSummary,
-  StatsOverview,
-  HerbAnalysis,
-  FormulaAnalysis,
-  ClinicalPath,
-  TextAnalysis,
   ModelActivationResponse,
   ModelSummary,
   NerPrediction,
@@ -251,77 +246,6 @@ export async function fetchGraphClauseDetail(clauseId: string) {
   const encodedClauseId = encodeURIComponent(clauseId);
   const response = await apiClient.get<GraphClauseDetail>(`/graph/clauses/${encodedClauseId}/`);
   return response.data;
-}
-
-export async function fetchHerbAnalysis(limit = 20) {
-  const response = await apiClient.get<HerbAnalysis>("/stats/herbs/", {
-    params: { limit },
-  });
-  return response.data;
-}
-
-export async function fetchFormulaAnalysis(limit = 20) {
-  const response = await apiClient.get<FormulaAnalysis>("/stats/formulas/", {
-    params: { limit },
-  });
-  return response.data;
-}
-
-export async function fetchClinicalPath() {
-  const response = await apiClient.get<ClinicalPath>("/stats/clinical-path/");
-  return response.data;
-}
-
-export async function fetchTextAnalysis() {
-  const response = await apiClient.get<TextAnalysis>("/stats/text/");
-  return response.data;
-}
-
-export async function fetchModelSummary() {
-  const response = await apiClient.get<ModelSummary>("/model/summary/");
-  return response.data;
-}
-
-export async function refreshAcceptedPipeline(limit?: number) {
-  const response = await apiClient.post<AcceptedPipelineRefreshResponse>("/model/datasets/accepted/refresh/", {
-    limit: limit ?? null,
-  });
-  return response.data;
-}
-
-export async function activateModel(payload: { task: "ner" | "relation"; modelId: string }) {
-  const response = await apiClient.post<ModelActivationResponse>("/model/registry/activate/", {
-    task: payload.task,
-    model_id: payload.modelId,
-  });
-  return response.data;
-}
-
-export async function fetchTrainingJobs(limit = 20) {
-  const response = await apiClient.get<TrainingJobsStatus>("/model/jobs/", {
-    params: { limit },
-  });
-  return response.data;
-}
-
-export async function startTrainingJob(payload: {
-  task: "ner" | "relation";
-  datasetSource: "baseline" | "merged";
-  epochs?: number;
-  batchSize?: number;
-  learningRate?: number | null;
-  runName?: string;
-  activate?: boolean;
-}) {
-  const response = await apiClient.post<TrainingJobStartResponse>("/model/jobs/start/", {
-    task: payload.task,
-    dataset_source: payload.datasetSource,
-    epochs: payload.epochs ?? 3,
-    batch_size: payload.batchSize ?? 4,
-    learning_rate: payload.learningRate ?? null,
-    run_name: payload.runName ?? "",
-    activate: payload.activate ?? false,
-  });
   return response.data;
 }
 
