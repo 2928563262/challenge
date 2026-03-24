@@ -4,61 +4,26 @@ import { useRoute, useRouter } from "vue-router";
 import * as echarts from "echarts";
 import type { EChartsOption } from "echarts";
 
-import {
-  fetchGraphSummary,
-  fetchGraphEntityDetail,
-  searchGraphEntities,
-  searchCorpus,
-  fetchStatsOverview,
-  fetchHerbAnalysis,
-  fetchFormulaAnalysis,
-  fetchClinicalPath,
-  fetchTextAnalysis
-} from "../services/api";
-import type {
-  CorpusEntry,
-  GraphEntity,
-  GraphEntityDetail,
-  GraphRelation,
-  GraphSummary,
-  StatsOverview,
-  HerbAnalysis,
-  FormulaAnalysis,
-  ClinicalPath,
-  TextAnalysis
-} from "../types/api";
+import { fetchGraphSummary, fetchGraphEntityDetail, searchGraphEntities, searchCorpus, fetchStatsOverview } from "../services/api";
+import type { CorpusEntry, GraphEntity, GraphEntityDetail, GraphRelation, GraphSummary, StatsOverview } from "../types/api";
 
 const router = useRoute();
 const route = useRouter();
 
 // ============ 统计图表相关状态 ============
 const summary = ref<StatsOverview | null>(null);
-const herbAnalysis = ref<HerbAnalysis | null>(null);
-const formulaAnalysis = ref<FormulaAnalysis | null>(null);
-const clinicalPath = ref<ClinicalPath | null>(null);
-const textAnalysis = ref<TextAnalysis | null>(null);
 const loading = ref(false);
 const errorMessage = ref("");
 
 // 图表DOM引用
-// 新图表DOM引用// 新图表DOM引用
-const entityTypeBarChartRef = ref<HTMLElement | null>(null);
-const herbBarChartRef = ref<HTMLElement | null>(null);
-const herbWordCloudRef = ref<HTMLElement | null>(null);
-const herbNetworkRef = ref<HTMLElement | null>(null);
-const formulaBarChartRef = ref<HTMLElement | null>(null);
-const formulaHerbGraphRef = ref<HTMLElement | null>(null);
-const clinicalSankeyRef = ref<HTMLElement | null>(null);
-const textHeatmapRef = ref<HTMLElement | null>(null);
+const relationPieChartRef = ref<HTMLElement | null>(null);
+const strengthChartRef = ref<HTMLElement | null>(null);
+const formulaPieChartRef = ref<HTMLElement | null>(null);
+const wordCloudRef = ref<HTMLElement | null>(null);
 
-let entityTypeBarChart: echarts.ECharts | null = null;
-let herbBarChart: echarts.ECharts | null = null;
-let herbWordCloud: echarts.ECharts | null = null;
-let herbNetwork: echarts.ECharts | null = null;
-let formulaBarChart: echarts.ECharts | null = null;
-let formulaHerbGraph: echarts.ECharts | null = null;
-let clinicalSankey: echarts.ECharts | null = null;
-let textHeatmap: echarts.ECharts | null = null;
+let relationPieChart: echarts.ECharts | null = null;
+let strengthChart: echarts.ECharts | null = null;
+let formulaPieChart: echarts.ECharts | null = null;
 
 // ============ 检索相关状态 ============
 const keyword = ref("");
@@ -146,6 +111,40 @@ const relationTypeDistribution = computed(() => {
     }));
   }
   return [];
+});
+
+// ============ 实体关系强度（堆叠柱状图数据） ============
+const entityRelationStrength = computed(() => {
+  // 有搜索时，使用 expandedResults 中的实体
+  if (expandedResults.value.length > 0) {
+    return expandedResults.value.slice(0, 15).map(entity => {
+      const detail = entityDetailsMap.value.get(entity.entity_id);
+      const outgoingCount = detail?.outgoing_relations.length || 0;
+      const incomingCount = detail?.incoming_relations.length || 0;
+      
+      return {
+        name: entity.name.length > 12 ? entity.name.substring(0, 12) + "..." : entity.name,
+        type: entityTypeLabels[entity.entity_type] || entity.entity_type,
+        outgoing: outgoingCount,
+        incoming: incomingCount,
+      };
+    });
+  }
+  // 无搜索时，使用 summary.top_entities 的整体数据（但没有详情，无法知道出边/入边数量）
+  // 这种情况下返回空，图表可以不显示
+  return [];
+});
+
+// ============ 词云数据 ============
+const wordCloudData = computed(() => {
+  if (expandedResults.value.length === 0) return [];
+  const maxMention = Math.max(...expandedResults.value.map(e => e.mention_count), 1);
+  return expandedResults.value.map(entity => ({
+    name: entity.name,
+    value: entity.mention_count,
+    // 字体大小范围 14-40
+    fontSize: 14 + ((entity.mention_count / maxMention) * 26),
+  }));
 });
 
 // ============ 方剂分布（用于饼图） ============
@@ -329,7 +328,7 @@ async function runSearch() {
   try {
     const [graphPayload, corpusPayload] = await Promise.all([
       searchGraphEntities({ keyword: normalizedKeyword, entityType: entityType.value || undefined, limit: 20 }),
-      searchCorpus({ keyword: normalizedKeyword, page: 1, pageSize: 20 }),
+      searchCorpus({ keyword: normalizedKeyword }),
     ]);
 
     searchResults.value = graphPayload.results;
@@ -361,778 +360,156 @@ function clearSearch() {
   expandedResults.value = [];
 }
 
-
 // ============ 图表初始化 ============
-function initCharts() {
-  initEntityTypeBarChart();
-  initHerbBarChart();
-  initHerbWordCloud();
-  initHerbNetwork();
-  initFormulaBarChart();
-  initFormulaHerbGraph();
-  initClinicalSankey();
-  initTextHeatmap();
-}
-
-// 1. 实体类型分布（条形图）
-function initEntityTypeBarChart() {
-  if (!entityTypeBarChartRef.value) return;
-  entityTypeBarChart = echarts.init(entityTypeBarChartRef.value);
+function initRelationPieChart() {
+  if (!relationPieChartRef.value) return;
+  relationPieChart = echarts.init(relationPieChartRef.value);
   const option: EChartsOption = {
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: [] },
-    yAxis: { type: 'value' },
-    series: [{
-      data: [],
-      type: 'bar',
-      itemStyle: { color: '#c41e3a' }
-    }]
-  };
-  entityTypeBarChart.setOption(option);
-}
-
-// 2. 中药频次排行（条形图）
-function initHerbBarChart() {
-  if (!herbBarChartRef.value) return;
-  herbBarChart = echarts.init(herbBarChartRef.value);
-  const option: EChartsOption = {
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: [] },
-    yAxis: { type: 'value' },
-    series: [{
-      data: [],
-      type: 'bar',
-      itemStyle: { color: '#4caf50' }
-    }]
-  };
-  herbBarChart.setOption(option);
-}
-
-// 3. 中药词云（暂时用横向条形图代替，实际可用 echarts-wordcloud）
-function initHerbWordCloud() {
-  if (!herbWordCloudRef.value) return;
-  herbWordCloud = echarts.init(herbWordCloudRef.value);
-  const option: EChartsOption = {
-    tooltip: {},
-    xAxis: { type: 'value' },
-    yAxis: { type: 'category', data: [] },
-    series: [{
-      data: [],
-      type: 'bar',
-      itemStyle: { color: '#4caf50' }
-    }]
-  };
-  herbWordCloud.setOption(option);
-}
-
-// 4. 中药共现网络
-function initHerbNetwork() {
-  if (!herbNetworkRef.value) return;
-  herbNetwork = echarts.init(herbNetworkRef.value);
-  const option: EChartsOption = {
-    tooltip: {},
-    series: [{
-      type: 'graph',
-      layout: 'force',
-      data: [],
-      links: [],
-      categories: [{ name: ' herbs' }],
-      roam: true,
-      label: { show: true },
-      force: { repulsion: 100 }
-    }]
-  };
-  herbNetwork.setOption(option);
-}
-
-// 5. 方剂频次排行（条形图）
-function initFormulaBarChart() {
-  if (!formulaBarChartRef.value) return;
-  formulaBarChart = echarts.init(formulaBarChartRef.value);
-  const option: EChartsOption = {
-    tooltip: { trigger: 'axis' },
-    xAxis: { type: 'category', data: [] },
-    yAxis: { type: 'value' },
-    series: [{
-      data: [],
-      type: 'bar',
-      itemStyle: { color: '#ff9800' }
-    }]
-  };
-  formulaBarChart.setOption(option);
-}
-
-// 6. 方剂-中药关系图（Graph）
-function initFormulaHerbGraph() {
-  if (!formulaHerbGraphRef.value) return;
-  formulaHerbGraph = echarts.init(formulaHerbGraphRef.value);
-  const option: EChartsOption = {
-    tooltip: {},
-    series: [{
-      type: 'graph',
-      layout: 'force',
-      data: [],
-      links: [],
-      categories: [
-        { name: '方剂' },
-        { name: '中药' }
-      ],
-      roam: true,
-      label: { show: true },
-      force: { repulsion: 200 }
-    }]
-  };
-  formulaHerbGraph.setOption(option);
-}
-
-// 7. 诊疗路径桑基图（重点）
-function initClinicalSankey() {
-  if (!clinicalSankeyRef.value) return;
-  clinicalSankey = echarts.init(clinicalSankeyRef.value);
-  const option: EChartsOption = {
-    tooltip: { trigger: 'item' },
-    series: [{
-      type: 'sankey',
-      emphasis: { focus: 'adjacency' },
-      data: [],
-      links: [],
-      top: '10%',
-      bottom: '10%',
-      nodeWidth: 20,
-      nodeGap: 8,
-      itemStyle: { color: '#c41e3a', borderColor: '#ccc' },
-      lineStyle: { color: 'source', curveness: 0.5 }
-    }]
-  };
-  clinicalSankey.setOption(option);
-}
-
-// 8. 条文-实体热力图
-function initTextHeatmap() {
-  if (!textHeatmapRef.value) return;
-  textHeatmap = echarts.init(textHeatmapRef.value);
-  const option: EChartsOption = {
-    tooltip: { position: 'top' },
-    xAxis: { type: 'category', data: [] },
-    yAxis: { type: 'category', data: [] },
-    visualMap: {
-      min: 0,
-      max: 10,
-      calculable: true,
-      inRange: { color: ['#fff', '#c41e3a'] }
+    title: { text: "关系类型分布", left: "center", textStyle: { fontSize: 16 } },
+    tooltip: { trigger: "item", formatter: "{a} <br/>{b}: {c} ({d}%)" },
+    legend: { 
+      orient: "horizontal", 
+      bottom: 0,
+      left: "center",
+      itemWidth: 12,
+      itemHeight: 12,
+      textStyle: { fontSize: 11 },
     },
-    series: [{
-      type: 'heatmap',
-      data: [],
-      label: { show: true }
-    }]
+    series: [
+      {
+        name: "关系类型",
+        type: "pie",
+        radius: ["30%", "60%"],
+        center: ["50%", "45%"],
+        avoidLabelOverlap: false,
+        itemStyle: { borderRadius: 8, borderColor: "#fff", borderWidth: 2 },
+        label: { show: true, formatter: "{b}: {d}%", fontSize: 11 },
+        emphasis: { label: { show: true, fontSize: 13, fontWeight: "bold" } },
+        data: [],
+      },
+    ],
   };
-  textHeatmap.setOption(option);
+  relationPieChart.setOption(option);
+}
+
+function initStrengthChart() {
+  if (!strengthChartRef.value) return;
+  strengthChart = echarts.init(strengthChartRef.value);
+  const option: EChartsOption = {
+    title: { text: "实体关系强度", left: "center", textStyle: { fontSize: 16 } },
+    tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+    legend: { data: ["出边", "入边"], top: "bottom" },
+    grid: { left: "3%", right: "4%", bottom: "15%", containLabel: true },
+    xAxis: { type: "category", data: [], axisLabel: { rotate: 45, fontSize: 11 } },
+    yAxis: { type: "value", name: "关系数量" },
+    series: [
+      { name: "出边", type: "bar", stack: "total", itemStyle: { color: "#c41e3a" }, data: [] },
+      { name: "入边", type: "bar", stack: "total", itemStyle: { color: "#4a7c59" }, data: [] },
+    ],
+  };
+  strengthChart.setOption(option);
+}
+
+
+function initFormulaPieChart() {
+  if (!formulaPieChartRef.value) return;
+  formulaPieChart = echarts.init(formulaPieChartRef.value);
+  const option: EChartsOption = {
+    title: { text: "关联方剂分布", left: "center", textStyle: { fontSize: 16 } },
+    tooltip: { trigger: "item", formatter: "{a} <br/>{b}: {c} 条原文 ({d}%)" },
+    legend: {
+      orient: "horizontal",
+      bottom: 0,
+      left: "center",
+      itemWidth: 12,
+      itemHeight: 12,
+      textStyle: { fontSize: 11 },
+    },
+    series: [
+      {
+        name: "方剂",
+        type: "pie",
+        radius: ["30%", "60%"],
+        center: ["50%", "45%"],
+        avoidLabelOverlap: false,
+        itemStyle: { borderRadius: 8, borderColor: "#fff", borderWidth: 2 },
+        label: { show: true, formatter: "{b}: {d}%", fontSize: 11 },
+        emphasis: { label: { show: true, fontSize: 13, fontWeight: "bold" } },
+        data: [],
+      },
+    ],
+  };
+  formulaPieChart.setOption(option);
+}
+
+function initCharts() {
+  initFormulaPieChart();
+  initRelationPieChart();
+  initStrengthChart();
 }
 
 function updateChartOptions() {
-  const hasSearch = expandedResults.value.length > 0 || searchResults.value.length > 0;
-
-  // ========== 检索模式：使用动态数据 ==========
-  if (hasSearch) {
-    const allEntities = expandedResults.value.length > 0 ? expandedResults.value : searchResults.value;
-    const detailsMap = entityDetailsMap.value;
-
-    // 1. 实体类型分布（基于 expandedResults）
-    if (entityTypeBarChart) {
-      const typeCounts: Record<string, number> = {};
-      allEntities.forEach(e => {
-        typeCounts[e.entity_type] = (typeCounts[e.entity_type] || 0) + 1;
-      });
-      const data = Object.entries(typeCounts)
-        .map(([type, count]) => ({ name: entityTypeLabels[type] || type, value: count }))
-        .sort((a, b) => b.value - a.value);
-      entityTypeBarChart.setOption({
-        xAxis: { data: data.map(d => d.name) },
-        series: [{ data: data.map(d => d.value) }]
-      });
-    }
-
-    // 2. 中药频次排行（基于 expandedResults + entityDetailsMap 中的中药）
-    if (herbBarChart) {
-      const herbCounts: Record<string, number> = {};
-      
-      // 先统计检索结果中的中药
-      allEntities.filter(e => e.entity_type === 'HERB').forEach(h => {
-        herbCounts[h.name] = (herbCounts[h.name] || 0) + (h.mention_count || 1);
-      });
-      
-      // 再从关系中发现的中药
-      detailsMap.forEach((detail) => {
-        [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
-          const related = rel.related_entity;
-          if (related && related.entity_type === 'HERB') {
-            herbCounts[related.name] = (herbCounts[related.name] || 0) + (related.mention_count || 1);
-          }
-        });
-      });
-
-      const herbs = Object.entries(herbCounts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-      
-      herbBarChart.setOption({
-        xAxis: { data: herbs.map(h => h.name) },
-        series: [{ data: herbs.map(h => h.count) }]
-      });
-    }
-
-    // 3. 中药词云（同上，横向条形图）
-    if (herbWordCloud) {
-      const herbCounts: Record<string, number> = {};
-      allEntities.filter(e => e.entity_type === 'HERB').forEach(h => {
-        herbCounts[h.name] = (herbCounts[h.name] || 0) + (h.mention_count || 1);
-      });
-      detailsMap.forEach((detail) => {
-        [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
-          const related = rel.related_entity;
-          if (related && related.entity_type === 'HERB') {
-            herbCounts[related.name] = (herbCounts[related.name] || 0) + (related.mention_count || 1);
-          }
-        });
-      });
-
-      const herbs = Object.entries(herbCounts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 15);
-
-      herbWordCloud.setOption({
-        yAxis: { data: herbs.map(h => h.name) },
-        series: [{ data: herbs.map(h => h.count) }]
-      });
-    }
-
-    // 4. 中药共现网络（基于 shared formulas）
-    if (herbNetwork) {
-      const herbs = allEntities.filter(e => e.entity_type === 'HERB');
-      if (herbs.length > 0) {
-        const herbCounts: Record<string, number> = {};
-        herbs.forEach(h => {
-          herbCounts[h.name] = (herbCounts[h.name] || 0) + (h.mention_count || 1);
-        });
-        detailsMap.forEach((detail) => {
-          [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
-            const related = rel.related_entity;
-            if (related && related.entity_type === "HERB") {
-              herbCounts[related.name] = (herbCounts[related.name] || 0) + (related.mention_count || 1);
-            }
-          });
-        });
-
-        // 构建共现矩阵：通过共享的方剂
-        const herbNames = [...new Set(herbs.map(h => h.name))].slice(0, 12);
-        const coMatrix: Record<string, Record<string, number>> = {};
-
-        // 初始化矩阵
-        herbNames.forEach(h1 => {
-          coMatrix[h1] = {};
-          herbNames.forEach(h2 => {
-            if (h1 !== h2) coMatrix[h1][h2] = 0;
-          });
-        });
-
-        // 从实体关系中计算共现
-        detailsMap.forEach((detail, entityId) => {
-          const entity = allEntities.find(e => e.entity_id === entityId);
-          if (entity?.entity_type === 'FORMULA') {
-            const herbRel = [...detail.outgoing_relations, ...detail.incoming_relations]
-              .filter(rel => rel.relation_type === 'FORMULA_CONTAINS_HERB' && rel.related_entity);
-            const herbNamesInFormula = herbRel.map(rel => rel.related_entity!.name);
-            for (let i = 0; i < herbNamesInFormula.length; i++) {
-              for (let j = i + 1; j < herbNamesInFormula.length; j++) {
-                const h1 = herbNamesInFormula[i];
-                const h2 = herbNamesInFormula[j];
-                if (coMatrix[h1] && coMatrix[h1][h2] !== undefined) {
-                  coMatrix[h1][h2]++;
-                  coMatrix[h2][h1]++;
-                }
-              }
-            }
-          }
-        });
-
-        const nodes = herbNames.map(name => ({
-          id: name,
-          name,
-          symbolSize: 10 + (herbCounts[name] || 1) * 3,
-          category: 0,
-          value: herbCounts[name] || 1
-        }));
-
-        const links: any[] = [];
-        for (let i = 0; i < herbNames.length; i++) {
-          for (let j = i + 1; j < herbNames.length; j++) {
-            const h1 = herbNames[i];
-            const h2 = herbNames[j];
-            const weight = coMatrix[h1][h2];
-            if (weight > 0) {
-              links.push({ source: h1, target: h2, value: weight, lineStyle: { width: Math.min(weight * 2, 5) } });
-            }
-          }
-        }
-
-        herbNetwork.setOption({
-          series: [{
-            data: nodes,
-            links: links,
-            categories: [{ name: '中药' }],
-            force: { repulsion: 150, edgeLength: 50 }
-          }]
-        });
-      } else {
-        herbNetwork.setOption({ series: [{ data: [], links: [] }] });
-      }
-    }
-
-    // 5. 方剂频次排行
-    if (formulaBarChart) {
-      const formulaCounts: Record<string, number> = {};
-
-      // 统计检索结果中的方剂
-      allEntities.filter(e => e.entity_type === 'FORMULA').forEach(f => {
-        formulaCounts[f.name] = (formulaCounts[f.name] || 0) + (f.mention_count || 1);
-      });
-
-      // 从关系中统计方剂
-      detailsMap.forEach((detail, entityId) => {
-        const entity = allEntities.find(e => e.entity_id === entityId);
-        if (entity?.entity_type === 'FORMULA') {
-          formulaCounts[entity.name] = (formulaCounts[entity.name] || 0) + (entity.mention_count || 1);
-        }
-      });
-
-      const formulas = Object.entries(formulaCounts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-
-      formulaBarChart.setOption({
-        xAxis: { data: formulas.map(f => f.name) },
-        series: [{ data: formulas.map(f => f.count) }]
-      });
-    }
-
-    // 6. 方剂-中药关系图
-    if (formulaHerbGraph) {
-      const formulas = allEntities.filter(e => e.entity_type === 'FORMULA');
-      const herbs = allEntities.filter(e => e.entity_type === 'HERB');
-      
-      const nodes = [
-        ...formulas.map(f => ({ id: f.name, name: f.name, symbolSize: 30, category: 0 })),
-        ...herbs.map(h => ({ id: h.name, name: h.name, symbolSize: 15, category: 1 }))
-      ];
-
-      const links: { source: string; target: string }[] = [];
-
-      // 从detailsMap中提取 FORMULA_CONTAINS_HERB 关系
-      detailsMap.forEach((detail, entityId) => {
-        const entity = allEntities.find(e => e.entity_id === entityId);
-        if (entity?.entity_type === 'FORMULA') {
-          [...detail.outgoing_relations, ...detail.incoming_relations]
-            .filter(rel => rel.relation_type === 'FORMULA_CONTAINS_HERB' && rel.related_entity)
-            .forEach(rel => {
-              links.push({
-                source: entity.name,
-                target: rel.related_entity!.name
-              });
-            });
-        }
-      });
-
-      formulaHerbGraph.setOption({
-        series: [{
-          data: nodes,
-          links: links,
-          categories: [{ name: '方剂' }, { name: '中药' }],
-          roam: true,
-          label: { show: true },
-          force: { repulsion: 200 }
-        }]
-      });
-    }
-
-    // 7. 诊疗路径桑基图
-    if (clinicalSankey) {
-      const nodesMap = new Map<string, { id: string; name: string; category: string }>();
-      const links: { source: string; target: string; value: number }[] = [];
-
-      // 从detailsMap中提取症状->证候->方剂路径
-      detailsMap.forEach((detail, entityId) => {
-        const entity = allEntities.find(e => e.entity_id === entityId);
-        if (!entity) return;
-
-        if (entity.entity_type === 'SYMPTOM') {
-          [...detail.outgoing_relations]
-            .filter(rel => rel.relation_type === 'SYMPTOM_TO_SYNDROME' && rel.related_entity)
-            .forEach(rel => {
-              const syndrome = rel.related_entity!;
-              nodesMap.set(entity.name, { id: entity.name, name: entity.name, category: 'symptom' });
-              nodesMap.set(syndrome.name, { id: syndrome.name, name: syndrome.name, category: 'syndrome' });
-              links.push({ source: entity.name, target: syndrome.name, value: rel.evidence_count || 1 });
-
-              // 继续追踪证候->方剂
-              const syndromeDetail = detailsMap.get(syndrome.entity_id);
-              if (syndromeDetail) {
-                [...syndromeDetail.outgoing_relations]
-                  .filter(r => r.relation_type === 'SYNDROME_TO_FORMULA' && r.related_entity)
-                  .forEach(r => {
-                    const formula = r.related_entity!;
-                    nodesMap.set(formula.name, { id: formula.name, name: formula.name, category: 'formula' });
-                    links.push({ source: syndrome.name, target: formula.name, value: r.evidence_count || 1 });
-                  });
-              }
-            });
-        }
-      });
-
-      const nodes = Array.from(nodesMap.values());
-      clinicalSankey.setOption({
-        series: [{
-          type: 'sankey',
-          emphasis: { focus: 'adjacency' },
-          data: nodes,
-          links: links,
-          top: '10%',
-          bottom: '10%',
-          nodeWidth: 20,
-          nodeGap: 8,
-          itemStyle: { color: '#c41e3a', borderColor: '#ccc' },
-          lineStyle: { color: 'source', curveness: 0.5 }
-        }]
-      });
-    }
-
-    // 8. 条文-实体热力图
-    if (textHeatmap) {
-      // 收集所有涉及的实体
-      const entitySet = new Set<string>();
-      allEntities.forEach(e => entitySet.add(e.name));
-      detailsMap.forEach((detail) => {
-        [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
-          if (rel.related_entity) entitySet.add(rel.related_entity.name);
-        });
-      });
-      const entities = Array.from(entitySet).slice(0, 15);
-      
-      // 收集涉及的条文
-      const clauseSet = new Set<string>();
-      allEntities.forEach(e => {
-        if (e.first_record_id) clauseSet.add(e.first_record_id);
-      });
-      const clauses = Array.from(clauseSet).slice(0, 10);
-
-      // 构建矩阵（简化：如果实体在关系中出现在条文相关实体中，标记为1）
-      const matrix: number[][] = [];
-      clauses.forEach(() => {
-        const row = entities.map(() => 0);
-        matrix.push(row);
-      });
-
-      // 简单填充：如果实体与当前条文相关
-      allEntities.forEach(entity => {
-        const clauseId = entity.first_record_id;
-        if (clauseId && clauses.includes(clauseId)) {
-          const rowIdx = clauses.indexOf(clauseId);
-          const colIdx = entities.indexOf(entity.name);
-          if (rowIdx >= 0 && colIdx >= 0) {
-            matrix[rowIdx][colIdx] = entity.mention_count || 1;
-          }
-        }
-      });
-
-      textHeatmap.setOption({
-        xAxis: { type: 'category', data: entities },
-        yAxis: { type: 'category', data: clauses },
-        visualMap: {
-          min: 0,
-          max: Math.max(...matrix.flat()),
-          calculable: true,
-          inRange: { color: ['#fff', '#c41e3a'] }
-        },
-        series: [{ type: 'heatmap', data: matrix.flatMap((row, rowIdx) =>
-          row.map((val, colIdx) => [colIdx, rowIdx, val])
-        ) }]
-      });
-    }
-
-    return; // 检索模式下，不执行后续的全局数据渲染
-  }
-
-  // ========== 全局模式：使用 loadData 加载的数据 ==========
+  console.log('updateChartOptions called', {
+    relationTypeDistribution: relationTypeDistribution.value.length,
+    entityRelationStrength: entityRelationStrength.value.length,
+    formulaDistribution: formulaDistribution.value.length
+  });
   
-  // 1. 实体类型分布条形图
-  if (entityTypeBarChart && summary.value?.entity_type_breakdown) {
-    const data = Object.entries(summary.value.entity_type_breakdown)
-      .map(([type, count]) => ({ name: entityTypeLabels[type] || type, value: count }))
-      .sort((a, b) => b.value - a.value);
-    entityTypeBarChart.setOption({
-      xAxis: { data: data.map(d => d.name) },
-      series: [{ data: data.map(d => d.value) }]
+  // 更新环形图（关系类型分布）
+  if (relationPieChart) {
+    relationPieChart.setOption({
+      series: [{ data: relationTypeDistribution.value }],
     });
+    console.log('relationPieChart updated with', relationTypeDistribution.value.length, 'items');
   }
 
-  // 2. 中药频次排行
-  if (herbBarChart && summary.value?.top_entities_by_type?.HERB) {
-    const herbs = summary.value.top_entities_by_type.HERB.slice(0, 10);
-    herbBarChart.setOption({
-      xAxis: { data: herbs.map(h => h.name) },
-      series: [{ data: herbs.map(h => h.mention_count) }]
+  // 更新堆叠柱状图（实体关系强度）
+  if (strengthChart) {
+    strengthChart.setOption({
+      xAxis: { data: entityRelationStrength.value.map((item) => item.name) },
+      series: [
+        { data: entityRelationStrength.value.map((item) => item.outgoing) },
+        { data: entityRelationStrength.value.map((item) => item.incoming) },
+      ],
     });
+    console.log('strengthChart updated with', entityRelationStrength.value.length, 'items');
   }
 
-  // 3. 中药词云（横向条形图）
-  if (herbWordCloud && summary.value?.top_entities_by_type?.HERB) {
-    const herbs = summary.value.top_entities_by_type.HERB.slice(0, 15);
-    herbWordCloud.setOption({
-      yAxis: { data: herbs.map(h => h.name) },
-      series: [{ data: herbs.map(h => h.mention_count) }]
+  // 更新饼图（方剂分布）
+  if (formulaPieChart) {
+    formulaPieChart.setOption({
+      series: [{ data: formulaDistribution.value }],
     });
-  }
-
-  // 4. 中药共现网络
-  if (herbNetwork && herbAnalysis.value?.cooccurrence_matrix) {
-    const herbs = herbAnalysis.value.top_herbs.slice(0, 10);
-    const coMatrix = herbAnalysis.value.cooccurrence_matrix;
-    const nodes = herbs.map((h, idx) => ({
-      id: h.name,
-      name: h.name,
-      symbolSize: 10 + (idx + 1) * 3,
-      category: 0,
-      value: h.count
-    }));
-    const links: any[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const herb1 = nodes[i].id;
-      if (coMatrix[herb1]) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const herb2 = nodes[j].id;
-          const weight = coMatrix[herb1][herb2];
-          if (weight && weight > 0) {
-            links.push({
-              source: herb1,
-              target: herb2,
-              value: weight,
-              lineStyle: { width: weight }
-            });
-          }
-        }
-      }
-    }
-    herbNetwork.setOption({
-      series: [{
-        data: nodes,
-        links: links,
-        categories: [{ name: '中药' }],
-        force: { repulsion: 150, edgeLength: 50 }
-      }]
-    });
-  } else if (herbNetwork) {
-    herbNetwork.setOption({ series: [{ data: [], links: [] }] });
-  }
-
-  // 5. 方剂频次排行
-  if (formulaBarChart && summary.value?.top_entities_by_type?.FORMULA) {
-    const formulas = summary.value.top_entities_by_type.FORMULA.slice(0, 10);
-    formulaBarChart.setOption({
-      xAxis: { data: formulas.map(f => f.name) },
-      series: [{ data: formulas.map(f => f.mention_count) }]
-    });
-  }
-
-  // 6. 方剂-中药关系图
-  if (formulaHerbGraph && formulaAnalysis.value?.formula_herb_network) {
-    const network = formulaAnalysis.value.formula_herb_network;
-    formulaHerbGraph.setOption({
-      series: [{
-        data: network.nodes,
-        links: network.edges,
-        categories: [{ name: '方剂' }, { name: '中药' }],
-        roam: true,
-        label: { show: true },
-        force: { repulsion: 200, edgeLength: 50 }
-      }]
-    });
-  } else if (formulaHerbGraph) {
-    const formulas = summary.value?.top_entities_by_type?.FORMULA?.slice(0, 5) || [];
-    const herbs = summary.value?.top_entities_by_type?.HERB?.slice(0, 10) || [];
-    const nodes = [
-      ...formulas.map(f => ({ id: f.name, name: f.name, symbolSize: 30, category: 0 })),
-      ...herbs.map(h => ({ id: h.name, name: h.name, symbolSize: 15, category: 1 }))
-    ];
-    const links: { source: string; target: string }[] = [];
-    formulaHerbGraph.setOption({
-      series: [{ data: nodes, links, categories: [{name:'方剂'},{name:'中药'}] }]
-    });
-  }
-
-  // 7. 诊疗路径桑基图
-  if (clinicalSankey && clinicalPath.value?.full_sankey) {
-    const { nodes, links } = clinicalPath.value.full_sankey;
-    clinicalSankey.setOption({
-      series: [{
-        type: 'sankey',
-        emphasis: { focus: 'adjacency' },
-        data: nodes.map(n => ({ id: n.id, name: n.name })),
-        links: links.map(l => ({ source: l.source, target: l.target, value: l.value })),
-        top: '10%',
-        bottom: '10%',
-        nodeWidth: 20,
-        nodeGap: 8,
-        itemStyle: { color: '#c41e3a', borderColor: '#ccc' },
-        lineStyle: { color: 'source', curveness: 0.5 }
-      }]
-    });
-  } else if (clinicalSankey) {
-    const syndromes = summary.value?.top_entities_by_type?.SYNDROME?.slice(0, 3) || [];
-    const formulas = summary.value?.top_entities_by_type?.FORMULA?.slice(0, 3) || [];
-    const symptoms = summary.value?.top_entities_by_type?.SYMPTOM?.slice(0, 3) || [
-      { name: '发热' }, { name: '头痛' }, { name: '汗出' }
-    ];
-    const nodes = [
-      ...symptoms.map(s => ({ id: s.name, name: s.name })),
-      ...syndromes.map(s => ({ id: s.name, name: s.name })),
-      ...formulas.map(f => ({ id: f.name, name: f.name }))
-    ];
-    const links: any[] = [];
-    symptoms.forEach(symptom => {
-      syndromes.forEach(syndrome => {
-        links.push({ source: symptom.name, target: syndrome.name, value: 1 });
-      });
-    });
-    syndromes.forEach(syndrome => {
-      formulas.forEach(formula => {
-        links.push({ source: syndrome.name, target: formula.name, value: 1 });
-      });
-    });
-    clinicalSankey.setOption({
-      series: [{
-        type: 'sankey',
-        emphasis: { focus: 'adjacency' },
-        data: nodes,
-        links: links,
-        top: '10%',
-        bottom: '10%',
-        nodeWidth: 20,
-        nodeGap: 8,
-        itemStyle: { color: '#c41e3a', borderColor: '#ccc' },
-        lineStyle: { color: 'source', curveness: 0.5 }
-      }]
-    });
-  }
-
-  // 8. 条文-实体热力图
-  if (textHeatmap && textAnalysis.value?.entity_matrix) {
-    const { articles, entities, matrix } = textAnalysis.value.entity_matrix;
-    const data: [number, number, number][] = [];
-    for (let row = 0; row < matrix.length; row++) {
-      for (let col = 0; col < matrix[row].length; col++) {
-        if (matrix[row][col] > 0) {
-          data.push([col, row, matrix[row][col]]);
-        }
-      }
-    }
-    textHeatmap.setOption({
-      xAxis: { type: 'category', data: entities },
-      yAxis: { type: 'category', data: articles },
-      visualMap: {
-        min: 0,
-        max: Math.max(...matrix.flat()),
-        calculable: true,
-        inRange: { color: ['#fff', '#c41e3a'] }
-      },
-      series: [{ type: 'heatmap', data }]
-    });
-  } else if (textHeatmap) {
-    const herbs = summary.value?.top_entities_by_type?.HERB?.slice(0, 10).map(h => h.name) || [];
-    const articleCount = summary.value?.kpi.article_count || 6;
-    const articles = Array.from({ length: Math.min(articleCount, 6) }, (_, i) => `条文${i+1}`);
-    const data: [number, number, number][] = [];
-    for (let row = 0; row < articles.length; row++) {
-      for (let col = 0; col < herbs.length; col++) {
-        data.push([col, row, Math.random() > 0.7 ? 1 : 0]);
-      }
-    }
-    textHeatmap.setOption({
-      xAxis: { data: herbs },
-      yAxis: { data: articles },
-      series: [{ data }]
-    });
+    console.log('formulaPieChart updated with', formulaDistribution.value.length, 'items');
   }
 }
 
 function resizeCharts() {
-  entityTypeBarChart?.resize();
-  herbBarChart?.resize();
-  herbWordCloud?.resize();
-  herbNetwork?.resize();
-  formulaBarChart?.resize();
-  formulaHerbGraph?.resize();
-  clinicalSankey?.resize();
-  textHeatmap?.resize();
+  relationPieChart?.resize();
+  strengthChart?.resize();
+  formulaPieChart?.resize();
 }
 
 // 监听数据变化
-watch(summary, () => {
+watch([relationTypeDistribution, entityRelationStrength, formulaDistribution], () => {
   updateChartOptions();
 }, { deep: true });
-
-watch(herbAnalysis, () => {
-  updateChartOptions();
-}, { deep: true });
-
-watch(formulaAnalysis, () => {
-  updateChartOptions();
-}, { deep: true });
-
-watch(clinicalPath, () => {
-  updateChartOptions();
-}, { deep: true });
-
-watch(textAnalysis, () => {
-  updateChartOptions();
-}, { deep: true });
-
-watch([searchResults, expandedResults], () => {
-  updateChartOptions();
-});
 
 async function loadData() {
   loading.value = true;
   errorMessage.value = "";
   try {
-    // 并行加载所有统计数据
-    const [overview, herbs, formulas, clinical, text] = await Promise.all([
-      fetchStatsOverview(),
-      fetchHerbAnalysis(15),
-      fetchFormulaAnalysis(10),
-      fetchClinicalPath(),
-      fetchTextAnalysis()
-    ]);
-
-    summary.value = overview;
-    herbAnalysis.value = herbs;
-    formulaAnalysis.value = formulas;
-    clinicalPath.value = clinical;
-    textAnalysis.value = text;
-
-    console.log('loadData: all stats loaded', {
-      article_count: overview.kpi.article_count,
-      entity_count: overview.kpi.entity_count,
-      herb_count: herbs.top_herbs.length,
-      formula_count: formulas.top_formulas.length,
-      sankey_nodes: clinical.full_sankey.nodes.length,
-      text_matrix_rows: text.entity_matrix.articles.length
+    const data = await fetchStatsOverview();
+    summary.value = data;
+    console.log('loadData: stats overview loaded', {
+      article_count: data.kpi.article_count,
+      entity_count: data.kpi.entity_count,
+      relation_count: data.kpi.relation_count,
+      top_formulas: data.top_entities_by_type?.FORMULA?.map((f: any) => f.name) || []
     });
   } catch (error) {
     errorMessage.value = "加载统计数据失败，请确认后端服务已启动。";
-    console.error("Failed to load stats:", error);
+    console.error("Failed to load stats overview:", error);
   } finally {
     loading.value = false;
   }
@@ -1148,14 +525,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("resize", resizeCharts);
-  entityTypeBarChart?.dispose();
-  herbBarChart?.dispose();
-  herbWordCloud?.dispose();
-  herbNetwork?.dispose();
-  formulaBarChart?.dispose();
-  formulaHerbGraph?.dispose();
-  clinicalSankey?.dispose();
-  textHeatmap?.dispose();
+  relationPieChart?.dispose();
+  strengthChart?.dispose();
+  formulaPieChart?.dispose();
 });
 </script>
 
@@ -1294,51 +666,42 @@ onUnmounted(() => {
           <button @click="loadData" class="retry-button">重试</button>
         </div>
 
-        <!-- 图表网格 - 新版组件化 -->
-        <div v-else class="stats-modules-grid">
-          <!-- 模块1：全局概览 (已在上方KPI卡片展示，这里放实体类型分布条形图) -->
-          <article class="chart-card module-overview">
-            <h3 class="module-title">实体类型分布</h3>
-            <div ref="entityTypeBarChartRef" class="chart-container"></div>
+        <!-- 图表网格 -->
+        <div v-else class="charts-grid-enhanced">
+          <!-- 关系类型分布（环形图） -->
+          <article class="chart-card">
+            <div ref="relationPieChartRef" class="chart-container"></div>
           </article>
 
-          <!-- 模块2：中药分析 -->
-          <article class="chart-card module-herb">
-            <h3 class="module-title">中药频次排行 (Top 10)</h3>
-            <div ref="herbBarChartRef" class="chart-container"></div>
+          <!-- 实体关系强度（堆叠柱状图） -->
+          <article class="chart-card">
+            <div ref="strengthChartRef" class="chart-container"></div>
           </article>
 
-          <article class="chart-card module-herb">
-            <h3 class="module-title">中药词云</h3>
-            <div ref="herbWordCloudRef" class="chart-container"></div>
+          <!-- 实体词云 -->
+
+          <!-- 关联方剂分布 -->
+          <article class="chart-card">
+            <div ref="formulaPieChartRef" class="chart-container"></div>
           </article>
 
-          <article class="chart-card module-herb full-width">
-            <h3 class="module-title">中药共现网络 (高频药对)</h3>
-            <div ref="herbNetworkRef" class="chart-container network-container"></div>
-          </article>
 
-          <!-- 模块3：方剂分析 -->
-          <article class="chart-card module-formula">
-            <h3 class="module-title">方剂频次排行</h3>
-            <div ref="formulaBarChartRef" class="chart-container"></div>
-          </article>
-
-          <article class="chart-card module-formula">
-            <h3 class="module-title">方剂-中药关系图</h3>
-            <div ref="formulaHerbGraphRef" class="chart-container graph-container"></div>
-          </article>
-
-          <!-- 模块4：诊疗路径 (桑基图) - 重点 -->
-          <article class="chart-card module-clinical full-width">
-            <h3 class="module-title">症状 → 证候 → 方剂 (桑基图)</h3>
-            <div ref="clinicalSankeyRef" class="chart-container sankey-container"></div>
-          </article>
-
-          <!-- 模块5：条文分析 -->
-          <article class="chart-card module-text full-width">
-            <h3 class="module-title">条文-实体矩阵 (热力图)</h3>
-            <div ref="textHeatmapRef" class="chart-container"></div>
+          <article class="chart-card full-width wordcloud-card">
+            <h3 class="cloud-title">实体词云（按提及次数）</h3>
+            <div ref="wordCloudRef" class="wordcloud-container">
+              <div v-if="wordCloudData.length === 0" class="empty-tip">暂无数据</div>
+              <div v-else class="wordcloud-content">
+                <span
+                  v-for="item in wordCloudData"
+                  :key="item.name"
+                  class="wordcloud-item"
+                  :style="{ fontSize: item.fontSize + 'px' }"
+                  :title="`${item.name}: ${item.value}次提及`"
+                >
+                  {{ item.name }}
+                </span>
+              </div>
+            </div>
           </article>
         </div>
       </section>

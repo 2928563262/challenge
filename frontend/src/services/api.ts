@@ -253,11 +253,6 @@ export async function fetchGraphClauseDetail(clauseId: string) {
   return response.data;
 }
 
-export async function fetchStatsOverview() {
-  const response = await apiClient.get<StatsOverview>("/stats/overview/");
-  return response.data;
-}
-
 export async function fetchHerbAnalysis(limit = 20) {
   const response = await apiClient.get<HerbAnalysis>("/stats/herbs/", {
     params: { limit },
