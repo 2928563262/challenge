@@ -91,7 +91,7 @@ class AnnotationCandidateListCreateView(APIView):
         raw_page_size = request.query_params.get("page_size") or raw_limit or str(DEFAULT_LIST_LIMIT)
         status_filter = str(request.query_params.get("status") or "").strip()
         keyword = str(request.query_params.get("q") or "").strip()
-
+        source_page_filter = str(request.query_params.get("source_page") or "").strip()
         try:
             page = max(1, int(raw_page))
         except ValueError:
@@ -114,6 +114,8 @@ class AnnotationCandidateListCreateView(APIView):
             queryset = queryset.filter(
                 Q(record_id__icontains=keyword) | Q(source_text__icontains=keyword) | Q(source_page__icontains=keyword)
             )
+        if source_page_filter:
+            queryset = queryset.filter(source_page=source_page_filter)
 
         total = queryset.count()
         total_pages = (total + page_size - 1) // page_size if total else 0
