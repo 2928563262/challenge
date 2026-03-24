@@ -106,15 +106,15 @@ class GraphManualRelationListCreateView(APIView):
 
         if not start_id or not end_id or not relation_type:
             return Response(
-                {"detail": "start_id, end_id and relation_type are required."},
+                {"detail": "缺少必要参数：start_id、end_id、relation_type。"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if record_ids is not None and not isinstance(record_ids, list):
-            return Response({"detail": "record_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "record_ids 必须是数组。"}, status=status.HTTP_400_BAD_REQUEST)
         try:
             evidence_count = int(evidence_count)
         except (TypeError, ValueError):
-            return Response({"detail": "evidence_count must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "evidence_count 必须是整数。"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             if action == "suppress":
@@ -134,7 +134,7 @@ class GraphManualRelationListCreateView(APIView):
                     record_ids=[str(item) for item in (record_ids or [])],
                 )
             else:
-                return Response({"detail": "action must be upsert or suppress."}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": "action 仅支持 upsert 或 suppress。"}, status=status.HTTP_400_BAD_REQUEST)
         except KeyError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
         except ValueError as exc:

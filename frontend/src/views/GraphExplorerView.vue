@@ -5,6 +5,7 @@ import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
 import StatePanel from "../components/common/StatePanel.vue";
+import HoverHint from "../components/common/HoverHint.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
   activateGraphVersion,
@@ -1367,9 +1368,9 @@ watch(
         <StatePanel v-if="nerError" tone="error">
           <p>{{ nerError }}</p>
         </StatePanel>
-        <StatePanel v-else tone="info">
-          <p>{{ t("explorer.nerHint") }}</p>
-        </StatePanel>
+        <div v-else class="inline-hint-row">
+          <HoverHint :text="t('explorer.nerHint')" :aria-label="t('explorer.extractionTitle')" />
+        </div>
       </article>
 
       <article class="panel">
@@ -1380,9 +1381,9 @@ watch(
           </div>
         </div>
 
-        <StatePanel v-if="!nerPrediction" tone="warning">
-          <p>{{ t("explorer.nerResultHint") }}</p>
-        </StatePanel>
+        <div v-if="!nerPrediction" class="inline-hint-row">
+          <HoverHint :text="t('explorer.nerResultHint')" :aria-label="t('explorer.predictionResultTitle')" />
+        </div>
         <template v-else>
           <div class="prediction-summary-strip">
             <div class="breakdown-item"><span>{{ t("explorer.predictSummary.total") }}</span><strong>{{ predictionMatchSummary.total }}</strong></div>
@@ -1418,9 +1419,9 @@ watch(
             <StatePanel v-if="manualEntityError" tone="error">
               <p>{{ manualEntityError }}</p>
             </StatePanel>
-            <StatePanel v-else tone="info">
-              <p>{{ t("explorer.manualEntity.hint") }}</p>
-            </StatePanel>
+            <div v-else class="inline-hint-row">
+              <HoverHint :text="t('explorer.manualEntity.hint')" :aria-label="t('explorer.manualEntity.title')" />
+            </div>
           </div>
 
           <StatePanel v-if="resolvingPredictedEntities" tone="info">
@@ -1513,7 +1514,9 @@ watch(
               </select>
               <button class="ghost-button" type="button" :disabled="!canRunRelation" @click="applyManualRelation">{{ t("explorer.relation.manualApply") }}</button>
             </div>
-            <p class="status-text">{{ t("explorer.relation.manualTherapyHint") }}</p>
+            <div class="inline-hint-row">
+              <HoverHint :text="t('explorer.relation.manualTherapyHint')" :aria-label="t('explorer.relation.manualTitle')" />
+            </div>
           </div>
         </form>
 
@@ -1523,9 +1526,9 @@ watch(
         <StatePanel v-else-if="relationBatchMessage" tone="success">
           <p>{{ relationBatchMessage }}</p>
         </StatePanel>
-        <StatePanel v-else tone="info">
-          <p>{{ t("explorer.relation.modelHint") }}</p>
-        </StatePanel>
+        <div v-else class="inline-hint-row">
+          <HoverHint :text="t('explorer.relation.modelHint')" :aria-label="t('explorer.relationAssistantTitle')" />
+        </div>
       </article>
 
       <article class="panel">
@@ -1536,9 +1539,9 @@ watch(
           </div>
         </div>
 
-        <StatePanel v-if="!relationPrediction" tone="warning">
-          <p>{{ t("explorer.relation.resultHint") }}</p>
-        </StatePanel>
+        <div v-if="!relationPrediction" class="inline-hint-row">
+          <HoverHint :text="t('explorer.relation.resultHint')" :aria-label="t('explorer.relationResultTitle')" />
+        </div>
         <template v-else>
           <div class="relation-result-card">
             <div class="breakdown-item"><span>{{ t("models.predictedRelation") }}</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
@@ -1570,13 +1573,16 @@ watch(
         </div>
       </div>
 
-      <StatePanel v-if="!predictedEntities.length" tone="warning">
-        <p>{{ t("explorer.session.noEntitiesHint") }}</p>
-      </StatePanel>
+      <div v-if="!predictedEntities.length" class="inline-hint-row">
+        <HoverHint :text="t('explorer.session.noEntitiesHint')" :aria-label="t('explorer.sessionGraphTitle')" />
+      </div>
       <template v-else>
-        <StatePanel :tone="exportMessage ? 'success' : 'info'">
-          <p>{{ exportMessage || t("explorer.session.defaultHint") }}</p>
+        <StatePanel v-if="exportMessage" tone="success">
+          <p>{{ exportMessage }}</p>
         </StatePanel>
+        <div v-else class="inline-hint-row">
+          <HoverHint :text="t('explorer.session.defaultHint')" :aria-label="t('explorer.sessionGraphTitle')" />
+        </div>
         <div class="session-graph-layout">
           <div class="session-graph-canvas">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
@@ -1676,9 +1682,12 @@ watch(
         <StatePanel v-if="searchError" tone="error">
           <p>{{ searchError }}</p>
         </StatePanel>
-        <StatePanel v-else tone="info">
-          <p>{{ tf("explorer.searchResultSummary", { entityCount: searchTotal, corpusCount: clauseTotal }) }}</p>
-        </StatePanel>
+        <div v-else class="inline-hint-row">
+          <HoverHint
+            :text="tf('explorer.searchResultSummary', { entityCount: searchTotal, corpusCount: clauseTotal })"
+            :aria-label="t('explorer.keywordSearchTitle')"
+          />
+        </div>
 
         <div class="entity-result-list">
           <button v-for="entity in searchResults" :key="entity.entity_id" class="entity-result-card" :class="{ active: selectedEntityDetail?.entity.entity_id === entity.entity_id }" type="button" @click="loadEntityDetail(entity.entity_id)">
@@ -1713,9 +1722,9 @@ watch(
         <StatePanel v-else-if="loadingEntityDetail" tone="info">
           <p>{{ t("explorer.loadingEntityDetail") }}</p>
         </StatePanel>
-        <StatePanel v-else-if="!selectedEntityDetail" tone="warning">
-          <p>{{ t("explorer.noEntitySelectedHint") }}</p>
-        </StatePanel>
+        <div v-else-if="!selectedEntityDetail" class="inline-hint-row">
+          <HoverHint :text="t('explorer.noEntitySelectedHint')" :aria-label="t('explorer.relationPreviewTitle')" />
+        </div>
 
         <template v-else>
           <div class="entity-focus-card">
@@ -1770,7 +1779,7 @@ watch(
                   <strong>{{ t("explorer.graphManual.title") }}</strong>
                   <span>{{ t("explorer.graphManual.desc") }}</span>
                 </div>
-                <div class="manual-relation-grid">
+                <div class="manual-relation-grid manual-relation-grid--dual">
                   <select v-model="graphManualRelationDirection">
                     <option value="outgoing">{{ t("explorer.graphManual.directionOutgoing") }}</option>
                     <option value="incoming">{{ t("explorer.graphManual.directionIncoming") }}</option>
@@ -1866,9 +1875,9 @@ watch(
           </div>
         </div>
 
-        <StatePanel v-if="!selectedEntityDetail" tone="warning">
-          <p>{{ t("explorer.evidenceHint") }}</p>
-        </StatePanel>
+        <div v-if="!selectedEntityDetail" class="inline-hint-row">
+          <HoverHint :text="t('explorer.evidenceHint')" :aria-label="t('explorer.evidenceTracebackTitle')" />
+        </div>
         <div v-else class="evidence-list">
           <article v-for="mention in selectedEntityDetail.mentions" :key="`${mention.clause_id}-${mention.start}-${mention.end}`" class="evidence-card">
             <div class="evidence-meta">

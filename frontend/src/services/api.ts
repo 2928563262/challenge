@@ -24,9 +24,15 @@ import type {
   ReviewedGraphRefreshResponse,
   GraphShowcaseResponse,
   GraphSummary,
+  StatsOverview,
+  HerbAnalysis,
+  FormulaAnalysis,
+  ClinicalPath,
+  TextAnalysis,
   ModelActivationResponse,
   ModelSummary,
   NerPrediction,
+  QAAnswer,
   RelationPrediction,
   AcceptedPipelineRefreshResponse,
   SystemPipelineRunResponse,
@@ -212,6 +218,35 @@ export async function fetchGraphClauseDetail(clauseId: string) {
   return response.data;
 }
 
+export async function fetchStatsOverview() {
+  const response = await apiClient.get<StatsOverview>("/stats/overview/");
+  return response.data;
+}
+
+export async function fetchHerbAnalysis(limit = 20) {
+  const response = await apiClient.get<HerbAnalysis>("/stats/herbs/", {
+    params: { limit },
+  });
+  return response.data;
+}
+
+export async function fetchFormulaAnalysis(limit = 20) {
+  const response = await apiClient.get<FormulaAnalysis>("/stats/formulas/", {
+    params: { limit },
+  });
+  return response.data;
+}
+
+export async function fetchClinicalPath() {
+  const response = await apiClient.get<ClinicalPath>("/stats/clinical-path/");
+  return response.data;
+}
+
+export async function fetchTextAnalysis() {
+  const response = await apiClient.get<TextAnalysis>("/stats/text/");
+  return response.data;
+}
+
 export async function fetchModelSummary() {
   const response = await apiClient.get<ModelSummary>("/model/summary/");
   return response.data;
@@ -298,6 +333,11 @@ export async function predictRelation(payload: {
   tail: { text: string; type: string; start?: number; end?: number };
 }) {
   const response = await apiClient.post<RelationPrediction>("/model/relation/predict/", payload);
+  return response.data;
+}
+
+export async function askQuestion(question: string) {
+  const response = await apiClient.post<QAAnswer>("/qa/ask/", { question });
   return response.data;
 }
 

@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRoute, useRouter } from "vue-router";
 
+import HoverHint from "../components/common/HoverHint.vue";
 import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel, formatStatusLabel } from "../i18n";
 import {
@@ -836,9 +837,9 @@ watch(
         <StatePanel v-if="loadingDetail" tone="info">
           <p>{{ t("annotation.loadingDetail") }}</p>
         </StatePanel>
-        <StatePanel v-else-if="!selectedRecord" tone="warning">
-          <p>{{ t("annotation.noRecordSelected") }}</p>
-        </StatePanel>
+        <div v-else-if="!selectedRecord" class="inline-hint-row">
+          <HoverHint :text="t('annotation.noRecordSelected')" :aria-label="t('annotation.detailTitle')" />
+        </div>
 
         <template v-else>
           <div class="entity-focus-card annotation-summary-card">

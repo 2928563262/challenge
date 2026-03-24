@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
+import HoverHint from "../components/common/HoverHint.vue";
 import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel } from "../i18n";
 import {
@@ -377,9 +378,9 @@ onMounted(async () => {
           <p>{{ graphSyncCard.meta }}</p>
         </article>
       </div>
-      <StatePanel v-else tone="warning">
-        <p>{{ t("home.sync.noSyncRecord") }}</p>
-      </StatePanel>
+      <div v-else class="inline-hint-row">
+        <HoverHint :text="t('home.sync.noSyncRecord')" :aria-label="t('home.panels.syncTitle')" />
+      </div>
     </section>
 
     <section class="content-grid dashboard-grid">

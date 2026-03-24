@@ -329,7 +329,7 @@ async function runSearch() {
   try {
     const [graphPayload, corpusPayload] = await Promise.all([
       searchGraphEntities({ keyword: normalizedKeyword, entityType: entityType.value || undefined, limit: 20 }),
-      searchCorpus(normalizedKeyword),
+      searchCorpus({ keyword: normalizedKeyword, page: 1, pageSize: 20 }),
     ]);
 
     searchResults.value = graphPayload.results;
@@ -613,6 +613,19 @@ function updateChartOptions() {
     if (herbNetwork) {
       const herbs = allEntities.filter(e => e.entity_type === 'HERB');
       if (herbs.length > 0) {
+        const herbCounts: Record<string, number> = {};
+        herbs.forEach(h => {
+          herbCounts[h.name] = (herbCounts[h.name] || 0) + (h.mention_count || 1);
+        });
+        detailsMap.forEach((detail) => {
+          [...detail.outgoing_relations, ...detail.incoming_relations].forEach(rel => {
+            const related = rel.related_entity;
+            if (related && related.entity_type === "HERB") {
+              herbCounts[related.name] = (herbCounts[related.name] || 0) + (related.mention_count || 1);
+            }
+          });
+        });
+
         // 构建共现矩阵：通过共享的方剂
         const herbNames = [...new Set(herbs.map(h => h.name))].slice(0, 12);
         const coMatrix: Record<string, Record<string, number>> = {};

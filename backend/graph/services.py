@@ -5,9 +5,13 @@ import json
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from functools import lru_cache
+import socket
+import subprocess
+import time
 from pathlib import Path
 from typing import Any
 import os
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from django.conf import settings
@@ -30,6 +34,23 @@ RELATION_TYPE_PAIR_RULES = {
     "SYNDROME_TO_THERAPY": ("SYNDROME", "THERAPY"),
     "FORMULA_CONTAINS_HERB": ("FORMULA", "HERB"),
     "FORMULA_HAS_ADMINISTRATION": ("FORMULA", "ADMINISTRATION"),
+}
+
+ENTITY_TYPE_ZH = {
+    "SYNDROME": "证候",
+    "SYMPTOM": "症状",
+    "FORMULA": "方剂",
+    "HERB": "中药",
+    "THERAPY": "治法",
+    "ADMINISTRATION": "服法",
+}
+
+RELATION_TYPE_ZH = {
+    "SYNDROME_HAS_SYMPTOM": "证候具有症状",
+    "SYNDROME_TO_FORMULA": "证候对应方剂",
+    "SYNDROME_TO_THERAPY": "证候采用治法",
+    "FORMULA_CONTAINS_HERB": "方剂包含中药",
+    "FORMULA_HAS_ADMINISTRATION": "方剂具有服法",
 }
 
 SHOWCASE_CASES = [
@@ -74,6 +95,151 @@ class GraphDataUnavailableError(RuntimeError):
 
 class GraphSyncError(RuntimeError):
     pass
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_neo4j_host_port(uri: str) -> tuple[str, int]:
+    normalized = uri if "://" in uri else f"bolt://{uri}"
+    parsed = urlparse(normalized)
+    host = parsed.hostname or "127.0.0.1"
+    port = int(parsed.port or 7687)
+    return host, port
+
+
+def _is_tcp_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _candidate_neo4j_dbms_roots() -> list[Path]:
+    home = Path.home()
+    return [
+        home / ".Neo4jDesktop2" / "Data" / "dbmss",
+        home / ".Neo4jDesktop" / "relate-data" / "dbmss",
+    ]
+
+
+def _discover_neo4j_desktop_dbms_home() -> Path | None:
+    configured_id = str(os.getenv("NEO4J_DESKTOP_DBMS_ID") or "").strip()
+    normalized_id = configured_id if configured_id.startswith("dbms-") else f"dbms-{configured_id}" if configured_id else ""
+
+    for root in _candidate_neo4j_dbms_roots():
+        if not root.exists():
+            continue
+        if normalized_id:
+            explicit = root / normalized_id
+            if (explicit / "bin" / "neo4j.bat").exists():
+                return explicit
+
+        candidates = [item for item in root.iterdir() if item.is_dir() and (item / "bin" / "neo4j.bat").exists()]
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        return candidates[0]
+    return None
+
+
+def _resolve_neo4j_start_commands() -> tuple[list[str], str | None]:
+    custom_command = str(os.getenv("NEO4J_START_COMMAND") or "").strip()
+    if custom_command:
+        return [custom_command], None
+
+    configured_home = str(os.getenv("NEO4J_DESKTOP_DBMS_HOME") or "").strip()
+    dbms_home = Path(configured_home) if configured_home else _discover_neo4j_desktop_dbms_home()
+    if dbms_home is None:
+        return [], None
+
+    neo4j_bat = dbms_home / "bin" / "neo4j.bat"
+    if not neo4j_bat.exists():
+        return [], None
+    quoted = f"\"{neo4j_bat}\""
+    return [f"{quoted} start", f"{quoted} console"], str(dbms_home)
+
+
+def _attempt_auto_start_neo4j(uri: str) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "enabled": _env_flag("NEO4J_AUTO_START", default=False),
+        "attempted": False,
+        "started": False,
+        "detail": "",
+    }
+    if not report["enabled"]:
+        report["detail"] = "auto-start disabled."
+        return report
+
+    host, port = _parse_neo4j_host_port(uri)
+    if _is_tcp_port_open(host, port):
+        report["started"] = True
+        report["detail"] = "neo4j already running."
+        return report
+
+    commands, cwd = _resolve_neo4j_start_commands()
+    report["attempted"] = True
+    report["commands"] = commands
+    report["cwd"] = cwd
+    if not commands:
+        report["detail"] = "未找到 Neo4j 启动命令，请配置 NEO4J_DESKTOP_DBMS_HOME 或 NEO4J_START_COMMAND。"
+        return report
+
+    timeout_sec = int(os.getenv("NEO4J_AUTO_START_TIMEOUT_SEC", "25") or "25")
+    deadline = time.time() + max(10, timeout_sec)
+    per_command_window = max(6, timeout_sec // max(1, len(commands)))
+    launch_records: list[dict[str, Any]] = []
+    last_error = ""
+
+    for command in commands:
+        try:
+            creation_flags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation_flags,
+            )
+            launch_records.append({"command": command, "pid": int(process.pid or 0)})
+        except Exception as exc:
+            last_error = str(exc)
+            launch_records.append({"command": command, "error": last_error})
+            continue
+
+        command_deadline = min(deadline, time.time() + per_command_window)
+        while time.time() < command_deadline:
+            if _is_tcp_port_open(host, port):
+                report["started"] = True
+                report["detail"] = f"Neo4j 已自动启动（命令：{command}）。"
+                report["launches"] = launch_records
+                return report
+            time.sleep(0.5)
+
+    report["launches"] = launch_records
+    if last_error:
+        report["detail"] = f"已尝试自动启动，但端口仍未就绪：{last_error}"
+    else:
+        report["detail"] = "已尝试自动启动（含 console 回退），但端口仍未就绪。"
+    return report
+
+
+def _friendly_graph_sync_error(exc: Exception) -> str:
+    raw = str(exc)
+    lowered = raw.lower()
+    if "winerror 10061" in lowered or "couldn't connect to" in lowered or "failed to establish connection" in lowered:
+        return "无法连接 Neo4j（127.0.0.1:7687）。请确认 Neo4j Desktop 实例已启动，且 Bolt 端口为 7687。"
+    if "authentication" in lowered or "unauthorized" in lowered:
+        return "Neo4j 认证失败。请检查用户名或密码配置。"
+    if "serviceunavailable" in lowered:
+        return "Neo4j 服务不可用。请确认数据库实例处于运行状态。"
+    return f"Neo4j 同步失败：{raw}"
 
 
 def _graph_paths(graph_dir: Path) -> dict[str, Path]:
@@ -216,11 +382,14 @@ def _resolve_manual_relation_records(records: list[dict[str, Any]]) -> list[dict
 def _validate_relation_pair(start_entity: dict[str, Any], end_entity: dict[str, Any], relation_type: str) -> None:
     expected = RELATION_TYPE_PAIR_RULES.get(relation_type)
     if expected is None:
-        raise ValueError(f"Unsupported relation_type: {relation_type}")
+        raise ValueError(f"不支持的关系类型：{relation_type}")
     actual = (str(start_entity.get("entity_type") or ""), str(end_entity.get("entity_type") or ""))
     if actual != expected:
+        relation_label = RELATION_TYPE_ZH.get(relation_type, relation_type)
+        expected_pair = f"{ENTITY_TYPE_ZH.get(expected[0], expected[0])} -> {ENTITY_TYPE_ZH.get(expected[1], expected[1])}"
+        actual_pair = f"{ENTITY_TYPE_ZH.get(actual[0], actual[0])} -> {ENTITY_TYPE_ZH.get(actual[1], actual[1])}"
         raise ValueError(
-            f"relation_type {relation_type} requires pair {expected[0]}->{expected[1]}, got {actual[0]}->{actual[1]}"
+            f"关系类型“{relation_label}”的实体方向不匹配：要求 {expected_pair}，当前为 {actual_pair}。"
         )
 
 
@@ -366,6 +535,7 @@ def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
     password = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
     database = os.getenv("NEO4J_DATABASE", "neo4j")
     batch_size = int(os.getenv("NEO4J_BATCH_SIZE", "500"))
+    auto_start_report = _attempt_auto_start_neo4j(uri)
     active_graph_id = str(active_graph.get("id") or "")
     manual_records = _resolve_manual_relation_records(
         [
@@ -386,16 +556,19 @@ def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
             manual_overrides=manual_records,
         )
     except Exception as exc:  # pragma: no cover
+        friendly_detail = _friendly_graph_sync_error(exc)
         payload = {
             "ok": False,
-            "detail": str(exc),
+            "detail": friendly_detail,
+            "raw_error": str(exc),
+            "auto_start": auto_start_report,
             "graph_version": active_graph,
             "graph_dir": str(target_graph_dir),
             "uri": uri,
             "database": database,
         }
         _write_neo4j_sync_report(payload)
-        raise GraphSyncError(str(exc)) from exc
+        raise GraphSyncError(friendly_detail) from exc
 
     payload = {
         "ok": True,
@@ -405,6 +578,7 @@ def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
         "uri": uri,
         "database": database,
         "summary": summary,
+        "auto_start": auto_start_report,
     }
     _write_neo4j_sync_report(payload)
     return payload

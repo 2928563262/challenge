@@ -208,6 +208,50 @@ export interface GraphShowcaseResponse {
   cases: GraphShowcaseCase[];
 }
 
+export interface StatsOverview {
+  kpi: {
+    article_count: number;
+    entity_count: number;
+    relation_count: number;
+    clause_mention_count: number;
+  };
+  entity_type_breakdown: Record<string, number>;
+  relation_type_breakdown: Record<string, number>;
+  top_entities_by_type: Record<string, Array<{ name: string; mention_count: number }>>;
+}
+
+export interface HerbAnalysis {
+  top_herbs: Array<{ name: string; count: number }>;
+  cooccurrence_matrix: Record<string, Record<string, number>>;
+}
+
+export interface FormulaAnalysis {
+  top_formulas: Array<{ name: string; mention_count: number; herb_count: number }>;
+  formula_herb_network: {
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+  };
+}
+
+export interface ClinicalPath {
+  symptom_to_syndrome: Array<{ from: string; to: string; weight: number }>;
+  syndrome_to_formula: Array<{ from: string; to: string; weight: number }>;
+  full_sankey: {
+    nodes: Array<Record<string, unknown>>;
+    links: Array<Record<string, unknown>>;
+  };
+}
+
+export interface TextAnalysis {
+  article_lengths: Array<{ id: string; length: number; entities: number }>;
+  entity_density: Array<Record<string, unknown>>;
+  entity_matrix: {
+    articles: string[];
+    entities: string[];
+    matrix: number[][];
+  };
+}
+
 export interface ReviewedGraphRefreshResponse {
   summary: Record<string, unknown>;
   registry: GraphRegistryStatus;
@@ -434,6 +478,19 @@ export interface RelationPrediction {
   confidence: number;
   top_predictions: RelationPredictionScore[];
   source_mode?: "model" | "manual";
+}
+
+export interface QAAnswer {
+  answer: string;
+  confidence: number;
+  entities: Array<{
+    type: string;
+    text: string;
+    start: number;
+    end: number;
+  }>;
+  related_entities: GraphEntity[];
+  cypher?: string | null;
 }
 
 export interface AnnotationCandidatePayload {

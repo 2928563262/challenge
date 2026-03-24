@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 import StatePanel from "../components/common/StatePanel.vue";
+import HoverHint from "../components/common/HoverHint.vue";
 import { formatBioLabel, formatEntityTypeLabel, formatRelationTypeLabel, formatSplitName } from "../i18n";
 import { activateModel, fetchModelSummary, fetchTrainingJobs, predictNer, predictRelation, refreshAcceptedPipeline, runSystemPipeline, startTrainingJob } from "../services/api";
 import type {
@@ -623,9 +624,9 @@ onBeforeUnmount(() => {
           </label>
         </form>
 
-        <StatePanel tone="info">
-          <p>{{ t("models.loopHint") }}</p>
-        </StatePanel>
+        <div class="inline-hint-row">
+          <HoverHint :text="t('models.loopHint')" :aria-label="t('models.oneClickLoopTitle')" />
+        </div>
       </article>
 
       <article class="panel">
@@ -700,9 +701,9 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <StatePanel v-else tone="info">
-          <p>{{ t("models.noTrainingJobs") }}</p>
-        </StatePanel>
+        <div v-else class="inline-hint-row">
+          <HoverHint :text="t('models.noTrainingJobs')" :aria-label="t('models.trainingTaskTitle')" />
+        </div>
       </article>
 
       <article class="panel">
@@ -747,9 +748,9 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
-            <StatePanel v-else tone="warning">
-              <p>{{ t("models.noNerRuns") }}</p>
-            </StatePanel>
+            <div v-else class="inline-hint-row">
+              <HoverHint :text="t('models.noNerRuns')" :aria-label="t('models.selectableNerRuns')" />
+            </div>
           </article>
 
           <article class="dataset-split-card">
@@ -770,9 +771,9 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </div>
-            <StatePanel v-else tone="warning">
-              <p>{{ t("models.noRelationRuns") }}</p>
-            </StatePanel>
+            <div v-else class="inline-hint-row">
+              <HoverHint :text="t('models.noRelationRuns')" :aria-label="t('models.selectableRelationRuns')" />
+            </div>
           </article>
         </div>
       </article>
@@ -838,9 +839,9 @@ onBeforeUnmount(() => {
         <StatePanel v-if="predictError" tone="error">
           <p>{{ predictError }}</p>
         </StatePanel>
-        <StatePanel v-else-if="!prediction" tone="info">
-          <p>{{ t("models.nerHint") }}</p>
-        </StatePanel>
+        <div v-else-if="!prediction" class="inline-hint-row">
+          <HoverHint :text="t('models.nerHint')" :aria-label="t('models.nerOnlinePredictTitle')" />
+        </div>
 
         <template v-else>
           <div class="entity-chip-list">
@@ -909,9 +910,9 @@ onBeforeUnmount(() => {
         <StatePanel v-if="relationPredictError" tone="error">
           <p>{{ relationPredictError }}</p>
         </StatePanel>
-        <StatePanel v-else-if="!relationPrediction" tone="info">
-          <p>{{ t("models.relationHint") }}</p>
-        </StatePanel>
+        <div v-else-if="!relationPrediction" class="inline-hint-row">
+          <HoverHint :text="t('models.relationHint')" :aria-label="t('models.relationPredictTitle')" />
+        </div>
 
         <template v-else>
           <div class="relation-result-card">
