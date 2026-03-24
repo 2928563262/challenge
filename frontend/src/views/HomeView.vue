@@ -1,194 +1,52 @@
-<script setup lang="ts">
-import axios from "axios";
+﻿<script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
 
-import HoverHint from "../components/common/HoverHint.vue";
-import StatePanel from "../components/common/StatePanel.vue";
-import { formatEntityTypeLabel } from "../i18n";
-import {
-  fetchGraphNeo4jSyncStatus,
-  fetchGraphShowcase,
-  fetchGraphSummary,
-  fetchModelSummary,
-  fetchOverview,
-  syncGraphToNeo4j,
-} from "../services/api";
-import type {
-  CorpusOverview,
-  GraphEntity,
-  GraphNeo4jSyncStatus,
-  GraphShowcaseCase,
-  GraphSummary,
-  GraphVersionRecord,
-  ModelSummary,
-} from "../types/api";
+import { fetchGraphShowcase, fetchGraphSummary, fetchOverview } from "../services/api";
+import type { CorpusOverview, GraphEntity, GraphShowcaseCase, GraphSummary } from "../types/api";
 
 const router = useRouter();
-const { t } = useI18n();
-const translate = t as unknown as (key: string, params?: Record<string, unknown>) => string;
-
-function tf(key: string, params: Record<string, string | number>) {
-  return String(translate(key, params));
-}
 
 const overview = ref<CorpusOverview | null>(null);
 const graphSummary = ref<GraphSummary | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
-const modelSummary = ref<ModelSummary | null>(null);
-const graphSyncStatus = ref<GraphNeo4jSyncStatus | null>(null);
 
 const loadingOverview = ref(false);
 const loadingGraphSummary = ref(false);
 const loadingShowcase = ref(false);
-const loadingModelSummary = ref(false);
-const loadingGraphSyncStatus = ref(false);
-const syncingGraph = ref(false);
 
 const overviewError = ref("");
 const graphError = ref("");
 const showcaseError = ref("");
-const modelError = ref("");
-const graphSyncError = ref("");
-const graphSyncMessage = ref("");
+
+const entityTypeLabels: Record<string, string> = {
+  FORMULA: "方剂",
+  SYNDROME: "证候",
+  SYMPTOM: "症状",
+  HERB: "中药",
+  THERAPY: "治法",
+  ADMINISTRATION: "服法",
+};
 
 const heroStats = computed(() => {
-  if (!graphSummary.value) {
-    return [];
-  }
-  return [
-    { label: t("home.stats.cleanedRecords"), value: graphSummary.value.input_record_count.toLocaleString("zh-CN") },
-    { label: t("home.stats.entityNodes"), value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
-    { label: t("home.stats.entityRelations"), value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
-    { label: t("home.stats.evidenceEdges"), value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
-  ];
-});
-
-const systemStatusCards = computed(() => {
-  if (!modelSummary.value || !graphSummary.value?.graph_version) {
+  if (!graphSummary.value || !overview.value) {
     return [];
   }
 
-  const activeNer = modelSummary.value.registry.active.ner;
-  const activeRelation = modelSummary.value.registry.active.relation;
-  const acceptedReportData = modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, unknown> | null;
-  const acceptedStats = (acceptedReportData?.stats ?? null) as Record<string, unknown> | null;
-  const acceptedCount = Number(acceptedStats?.record_count ?? 0);
-
   return [
-    {
-      label: t("home.system.defaultNerModel"),
-      value: activeNer.run_name,
-      meta: `${formatDatasetSource(activeNer.dataset_source)} · ${formatModelMetric(activeNer)}`,
-    },
-    {
-      label: t("home.system.defaultRelationModel"),
-      value: activeRelation.run_name,
-      meta: `${formatDatasetSource(activeRelation.dataset_source)} · ${formatModelMetric(activeRelation)}`,
-    },
-    {
-      label: t("home.system.currentGraphVersion"),
-      value: graphSummary.value.graph_version.run_name,
-      meta: `${formatGraphSource(graphSummary.value.graph_version.source_type)} · ${formatGraphMetric(graphSummary.value.graph_version)}`,
-    },
-    {
-      label: t("home.system.acceptedRecords"),
-      value: tf("home.system.acceptedRecordCount", { count: acceptedCount }),
-      meta: tf("home.system.updatedAt", {
-        time: formatUnixTimestamp(modelSummary.value.accepted_pipeline.accepted_report.updated_at),
-      }),
-    },
+    { label: "清洗后条文", value: graphSummary.value.input_record_count.toLocaleString("zh-CN") },
+    { label: "知识节点", value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
+    { label: "图谱关系", value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
+    { label: "原文证据边", value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
   ];
 });
 
-function formatNeo4jManualSummary(summary: Record<string, unknown>) {
-  const total = Number(summary.manual_overrides ?? 0);
-  const upserted = Number(summary.manual_relations_upserted ?? 0);
-  const suppressed = Number(summary.manual_relations_suppressed ?? 0);
-  if (!total && !upserted && !suppressed) {
-    return t("home.sync.manualSummaryZero");
-  }
-  return tf("home.sync.manualSummary", { total, upserted, suppressed });
-}
-
-const graphSyncCard = computed(() => {
-  const report = graphSyncStatus.value?.report;
-  if (!report) {
-    return null;
-  }
-  const summary = (report.summary ?? {}) as Record<string, unknown>;
-  return {
-    label: report.ok ? t("home.sync.latestSync") : t("home.sync.latestSyncFailed"),
-    value:
-      typeof (report.graph_version as Record<string, unknown>)?.run_name === "string"
-        ? String((report.graph_version as Record<string, unknown>).run_name)
-        : t("common.notRecorded"),
-    meta: report.ok
-      ? tf("home.sync.syncCardMeta", {
-          entityNodes: Number(summary.entity_nodes ?? 0),
-          entityRelations: Number(summary.entity_relations ?? 0),
-          manualSummary: formatNeo4jManualSummary(summary),
-          database: report.database,
-        })
-      : report.detail,
-  };
-});
-
+const typeBreakdown = computed(() => Object.entries(graphSummary.value?.entity_type_breakdown ?? {}));
 const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
 
-function getMentionCount(value: unknown) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
 function formatEntityType(entityTypeName: string) {
-  return formatEntityTypeLabel(entityTypeName);
-}
-
-function formatGraphSource(sourceType: string) {
-  if (sourceType === "accepted_reviewed") {
-    return t("home.graphSource.reviewed");
-  }
-  if (sourceType === "cleaned_silver") {
-    return t("home.graphSource.cleanedSilver");
-  }
-  return t("home.graphSource.custom");
-}
-
-function formatDatasetSource(source: string) {
-  if (source === "merged") {
-    return t("home.datasetSource.merged");
-  }
-  if (source === "incremental") {
-    return t("home.datasetSource.incremental");
-  }
-  return t("home.datasetSource.baseline");
-}
-
-function formatModelMetric(record: ModelSummary["registry"]["active"]["ner"] | ModelSummary["registry"]["active"]["relation"]) {
-  if (record.task === "ner") {
-    const f1 = record.validation_metrics.eval_f1 ?? record.validation_metrics.f1;
-    return typeof f1 === "number" ? tf("home.metric.nerF1", { score: f1.toFixed(4) }) : t("home.metric.noRecord");
-  }
-  const macroF1 = record.validation_metrics.eval_macro_f1 ?? record.validation_metrics.macro_f1;
-  return typeof macroF1 === "number"
-    ? tf("home.metric.relationMacroF1", { score: macroF1.toFixed(4) })
-    : t("home.metric.noRecord");
-}
-
-function formatGraphMetric(record: GraphVersionRecord) {
-  const entityCount = Number(record.stats.entity_node_count ?? 0);
-  const relationCount = Number(record.stats.entity_relation_count ?? 0);
-  return tf("home.graphMetric", { entityCount, relationCount });
-}
-
-function formatUnixTimestamp(value: number | null) {
-  if (!value) {
-    return t("common.notRecorded");
-  }
-  return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
+  return entityTypeLabels[entityTypeName] || entityTypeName;
 }
 
 function openExplorer(entity: GraphEntity) {
@@ -212,7 +70,7 @@ async function loadOverview() {
   try {
     overview.value = await fetchOverview();
   } catch {
-    overviewError.value = t("home.errors.overviewLoadFailed");
+    overviewError.value = "文本概览加载失败，请确认 Django 服务已经启动。";
   } finally {
     loadingOverview.value = false;
   }
@@ -224,60 +82,9 @@ async function loadGraphSummary() {
   try {
     graphSummary.value = await fetchGraphSummary();
   } catch {
-    graphError.value = t("home.errors.graphSummaryLoadFailed");
+    graphError.value = "图谱摘要加载失败，请确认图谱接口可访问。";
   } finally {
     loadingGraphSummary.value = false;
-  }
-}
-
-async function loadModelSummary() {
-  loadingModelSummary.value = true;
-  modelError.value = "";
-  try {
-    modelSummary.value = await fetchModelSummary();
-  } catch {
-    modelError.value = t("home.errors.modelSummaryLoadFailed");
-  } finally {
-    loadingModelSummary.value = false;
-  }
-}
-
-async function loadGraphSyncStatus() {
-  loadingGraphSyncStatus.value = true;
-  graphSyncError.value = "";
-  try {
-    graphSyncStatus.value = await fetchGraphNeo4jSyncStatus();
-  } catch {
-    graphSyncError.value = t("home.errors.graphSyncStatusLoadFailed");
-  } finally {
-    loadingGraphSyncStatus.value = false;
-  }
-}
-
-async function runNeo4jSync() {
-  syncingGraph.value = true;
-  graphSyncError.value = "";
-  graphSyncMessage.value = "";
-  try {
-    const payload = await syncGraphToNeo4j();
-    graphSyncStatus.value = payload.status;
-    const summary = (payload.sync.summary ?? {}) as Record<string, unknown>;
-    graphSyncMessage.value = tf("home.sync.successMessage", {
-      entityNodes: Number(summary.entity_nodes ?? 0),
-      entityRelations: Number(summary.entity_relations ?? 0),
-      manualSummary: formatNeo4jManualSummary(summary),
-    });
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      graphSyncError.value = String(error.response?.data?.detail || t("home.errors.graphSyncFailed"));
-      if (error.response?.data?.status) {
-        graphSyncStatus.value = error.response.data.status as GraphNeo4jSyncStatus;
-      }
-    } else {
-      graphSyncError.value = t("home.errors.graphSyncFailed");
-    }
-  } finally {
-    syncingGraph.value = false;
   }
 }
 
@@ -288,14 +95,14 @@ async function loadShowcase() {
     const payload = await fetchGraphShowcase();
     showcaseCases.value = payload.cases;
   } catch {
-    showcaseError.value = t("home.errors.showcaseLoadFailed");
+    showcaseError.value = "典型案例加载失败，请检查图谱接口。";
   } finally {
     loadingShowcase.value = false;
   }
 }
 
 onMounted(async () => {
-  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase(), loadModelSummary(), loadGraphSyncStatus()]);
+  await Promise.all([loadOverview(), loadGraphSummary(), loadShowcase()]);
 });
 </script>
 
@@ -303,83 +110,68 @@ onMounted(async () => {
   <main class="page-shell knowledge-page home-dashboard">
     <section class="hero-panel hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">{{ t("home.hero.eyebrow") }}</p>
-        <h1>{{ t("home.hero.title") }}</h1>
-        <p class="hero-description">{{ t("home.hero.description") }}</p>
+        <p class="eyebrow">Knowledge Graph MVP</p>
+        <h1>围绕《伤寒论》做一个可检索、可建图、可展示、可答辩的最小闭环系统。</h1>
+        <p class="hero-description">
+          首页负责给出项目全貌、核心统计和典型案例入口；图谱浏览页负责实体检索、关系网络概览和原文证据回溯。
+        </p>
         <div class="cta-row">
-          <RouterLink to="/explore" class="primary-link-button">{{ t("home.hero.enterExplore") }}</RouterLink>
-          <RouterLink to="/annotations" class="ghost-link">{{ t("home.hero.enterAnnotations") }}</RouterLink>
+          <RouterLink to="/explore" class="primary-link-button">进入图谱浏览</RouterLink>
+          <button class="ghost-button" type="button" @click="loadGraphSummary" :disabled="loadingGraphSummary">
+            {{ loadingGraphSummary ? "刷新中..." : "刷新图谱摘要" }}
+          </button>
+        </div>
+      </div>
+
+      <div class="hero-side showcase-card">
+        <div class="showcase-block">
+          <span>当前主线</span>
+          <strong>文本清洗 → 图谱导入 → 查询展示</strong>
+          <p>这一版优先把 Demo 和答辩所需的主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
         </div>
       </div>
     </section>
 
     <section class="stats-grid hero-stats">
-      <StatePanel v-if="graphError" tone="error">
-        <p>{{ graphError }}</p>
-      </StatePanel>
-      <StatePanel v-else-if="loadingGraphSummary" tone="info">
-        <p>{{ t("home.loading.graphStats") }}</p>
-      </StatePanel>
-      <template v-else>
-        <article v-for="item in heroStats" :key="item.label" class="stat-card">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-        </article>
-      </template>
+      <article v-for="item in heroStats" :key="item.label" class="stat-card">
+        <span>{{ item.label }}</span>
+        <strong>{{ item.value }}</strong>
+      </article>
     </section>
 
     <section class="panel showcase-panel">
       <div class="panel-header compact-header">
         <div>
-          <p class="panel-kicker">{{ t("home.panels.systemKicker") }}</p>
-          <h2>{{ t("home.panels.systemTitle") }}</h2>
+          <p class="panel-kicker">Case Showcase</p>
+          <h2>典型案例入口</h2>
         </div>
+        <RouterLink to="/explore" class="ghost-link">查看全部图谱细节</RouterLink>
       </div>
 
-      <StatePanel v-if="modelError" tone="error">
-        <p>{{ modelError }}</p>
-      </StatePanel>
-      <StatePanel v-else-if="loadingModelSummary" tone="info">
-        <p>{{ t("home.loading.systemStatus") }}</p>
-      </StatePanel>
-      <div v-else class="stats-grid hero-stats system-status-grid">
-        <article v-for="item in systemStatusCards" :key="item.label" class="stat-card">
-          <span>{{ item.label }}</span>
-          <strong>{{ item.value }}</strong>
-          <p>{{ item.meta }}</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="panel showcase-panel">
-      <div class="panel-header compact-header">
-        <div>
-          <p class="panel-kicker">{{ t("home.panels.syncKicker") }}</p>
-          <h2>{{ t("home.panels.syncTitle") }}</h2>
-        </div>
-        <button class="ghost-button" type="button" :disabled="syncingGraph" @click="runNeo4jSync">
-          {{ syncingGraph ? t("home.sync.syncing") : t("home.sync.syncAction") }}
+      <p v-if="showcaseError" class="status-text error">{{ showcaseError }}</p>
+      <p v-else-if="loadingShowcase" class="status-text">正在加载典型案例...</p>
+      <div v-else class="showcase-grid">
+        <button
+          v-for="caseItem in showcaseCases"
+          :key="caseItem.slug"
+          type="button"
+          class="showcase-case-card"
+          @click="openCase(caseItem)"
+        >
+          <div class="showcase-case-head">
+            <div>
+              <p class="entity-type-tag">{{ caseItem.focus }}</p>
+              <h3>{{ caseItem.title }}</h3>
+            </div>
+            <span>{{ caseItem.entity.name }}</span>
+          </div>
+          <p>{{ caseItem.description }}</p>
+          <div class="case-highlight-list">
+            <div v-for="highlight in caseItem.highlights" :key="highlight" class="case-highlight-item">
+              {{ highlight }}
+            </div>
+          </div>
         </button>
-      </div>
-
-      <StatePanel v-if="graphSyncError" tone="error">
-        <p>{{ graphSyncError }}</p>
-      </StatePanel>
-      <StatePanel v-else-if="graphSyncMessage" tone="success">
-        <p>{{ graphSyncMessage }}</p>
-      </StatePanel>
-      <StatePanel v-else-if="loadingGraphSyncStatus" tone="info">
-        <p>{{ t("home.loading.syncStatus") }}</p>
-      </StatePanel>
-      <div v-else-if="graphSyncCard" class="dataset-split-grid">
-        <article class="dataset-split-card">
-          <span>{{ graphSyncCard.label }}</span>
-          <strong>{{ graphSyncCard.value }}</strong>
-          <p>{{ graphSyncCard.meta }}</p>
-        </article>
-      </div>
-      <div v-else class="inline-hint-row">
-        <HoverHint :text="t('home.sync.noSyncRecord')" :aria-label="t('home.panels.syncTitle')" />
       </div>
     </section>
 
@@ -387,72 +179,91 @@ onMounted(async () => {
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.panels.showcaseKicker") }}</p>
+            <p class="panel-kicker">Graph Snapshot</p>
+            <h2>图谱类型分布</h2>
           </div>
-          <RouterLink to="/explore" class="ghost-link">{{ t("home.actions.viewGraphDetail") }}</RouterLink>
         </div>
 
-        <StatePanel v-if="showcaseError" tone="error">
-          <p>{{ showcaseError }}</p>
-        </StatePanel>
-        <StatePanel v-else-if="loadingShowcase" tone="info">
-          <p>{{ t("home.loading.showcase") }}</p>
-        </StatePanel>
-        <div v-else class="showcase-grid">
-          <button v-for="caseItem in showcaseCases" :key="caseItem.slug" type="button" class="showcase-case-card" @click="openCase(caseItem)">
-            <div class="showcase-case-head">
-              <div>
-                <p class="entity-type-tag">{{ caseItem.focus }}</p>
-                <h3>{{ caseItem.title }}</h3>
-              </div>
-              <span>{{ caseItem.entity.name }}</span>
-            </div>
-            <p>{{ caseItem.description }}</p>
-          </button>
+        <p v-if="graphError" class="status-text error">{{ graphError }}</p>
+        <div v-else class="breakdown-list">
+          <div v-for="([type, count]) in typeBreakdown" :key="type" class="breakdown-item">
+            <span>{{ formatEntityType(type) }}</span>
+            <strong>{{ count }}</strong>
+          </div>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.panels.topEntityKicker") }}</p>
-            <h2>{{ t("home.panels.topEntityTitle") }}</h2>
+            <p class="panel-kicker">Top Entities</p>
+            <h2>高频知识节点</h2>
           </div>
         </div>
 
         <div class="top-entity-grid">
-          <button v-for="entity in topEntities" :key="entity.entity_id" class="top-entity-card" type="button" @click="openExplorer(entity)">
+          <button
+            v-for="entity in topEntities"
+            :key="entity.entity_id"
+            class="top-entity-card"
+            type="button"
+            @click="openExplorer(entity)"
+          >
             <span>{{ formatEntityType(entity.entity_type) }}</span>
             <strong>{{ entity.name }}</strong>
-            <p>{{ tf("home.entityMentionCount", { count: getMentionCount(entity.mention_count) }) }}</p>
+            <p>提及 {{ entity.mention_count }} 次</p>
           </button>
         </div>
       </article>
     </section>
 
-    <section class="content-grid">
+    <section class="content-grid dashboard-grid secondary-grid">
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("home.panels.sampleKicker") }}</p>
-            <h2>{{ t("home.panels.sampleTitle") }}</h2>
+            <p class="panel-kicker">Formula Preview</p>
+            <h2>方剂相关条文样本</h2>
           </div>
         </div>
 
-        <StatePanel v-if="overviewError" tone="error">
-          <p>{{ overviewError }}</p>
-        </StatePanel>
-        <StatePanel v-else-if="loadingOverview" tone="info">
-          <p>{{ t("home.loading.overview") }}</p>
-        </StatePanel>
+        <p v-if="overviewError" class="status-text error">{{ overviewError }}</p>
+        <p v-else-if="loadingOverview" class="status-text">正在加载文本概览...</p>
         <div v-else class="sample-feed">
           <article v-for="entry in formulaSamples" :key="entry.id" class="sample-card">
             <div class="result-meta">
-              <span>{{ tf("home.recordLabel", { id: entry.id }) }}</span>
+              <span>条文 #{{ entry.id }}</span>
               <span v-if="entry.formula_name">{{ entry.formula_name }}</span>
             </div>
             <p>{{ entry.text }}</p>
           </article>
+        </div>
+      </article>
+
+      <article class="panel narrative-panel">
+        <div class="panel-header compact-header">
+          <div>
+            <p class="panel-kicker">Project Focus</p>
+            <h2>当前系统能做什么</h2>
+          </div>
+        </div>
+
+        <div class="narrative-list">
+          <div class="narrative-item">
+            <strong>关键词检索</strong>
+            <p>按方剂、证候、症状、中药等入口快速定位核心知识节点。</p>
+          </div>
+          <div class="narrative-item">
+            <strong>关系网络概览</strong>
+            <p>从一个实体出发查看主要入边和出边，快速讲清“谁和谁相关”。</p>
+          </div>
+          <div class="narrative-item">
+            <strong>原文证据回溯</strong>
+            <p>所有实体都能回到条文片段，避免图谱展示脱离原文来源。</p>
+          </div>
+          <div class="narrative-item">
+            <strong>典型案例答辩</strong>
+            <p>固定案例卡片可以直接作为比赛和课堂演示入口，减少临场检索风险。</p>
+          </div>
         </div>
       </article>
     </section>

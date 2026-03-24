@@ -1,38 +1,23 @@
 ﻿<script setup lang="ts">
 import axios from "axios";
-import { computed, onMounted, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import StatePanel from "../components/common/StatePanel.vue";
-import HoverHint from "../components/common/HoverHint.vue";
-import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
-  activateGraphVersion,
-  deleteGraphManualRelation,
-  fetchGraphClauseDetail,
   fetchGraphEntityDetail,
-  fetchGraphEntityPathways,
-  fetchGraphManualRelations,
-  fetchGraphRegistry,
   fetchGraphShowcase,
   fetchGraphSummary,
   predictNer,
   predictRelation,
   saveAnnotationCandidate,
-  searchGraphClauses,
+  searchCorpus,
   searchGraphEntities,
-  suppressGraphRelation,
-  upsertGraphManualRelation,
 } from "../services/api";
+import * as echarts from 'echarts';
 import type {
-  GraphClauseDetail,
-  GraphClauseSearchRecord,
+  CorpusEntry,
   GraphEntity,
   GraphEntityDetail,
-  GraphManualRelationOverrideRecord,
-  GraphEntityPathways,
-  GraphRegistryStatus,
   GraphRelation,
   GraphShowcaseCase,
   GraphSummary,
@@ -51,7 +36,6 @@ interface SessionGraphNode {
 
 interface SessionGraphEdge {
   key: string;
-  recordKey: string;
   headKey: string;
   tailKey: string;
   label: string;
@@ -60,50 +44,32 @@ interface SessionGraphEdge {
 
 const route = useRoute();
 const router = useRouter();
-const { t } = useI18n();
-const translate = t as unknown as (key: string, params?: Record<string, unknown>) => string;
-
-function tf(key: string, params: Record<string, string | number>) {
-  return String(translate(key, params));
-}
 
 const graphSummary = ref<GraphSummary | null>(null);
-const graphRegistry = ref<GraphRegistryStatus | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
 const selectedEntityDetail = ref<GraphEntityDetail | null>(null);
-const entityPathways = ref<GraphEntityPathways | null>(null);
 const nerPrediction = ref<NerPrediction | null>(null);
 const predictedGraphMatches = ref<Record<string, GraphEntity[]>>({});
 const relationPrediction = ref<RelationPrediction | null>(null);
 const relationHistory = ref<RelationPrediction[]>([]);
-const manualRelationOverrides = ref<GraphManualRelationOverrideRecord[]>([]);
-const loadingManualRelations = ref(false);
-const applyingManualGraphRelation = ref(false);
 const exportMessage = ref("");
 const savingCandidate = ref(false);
 const batchRelationPredicting = ref(false);
 
 const loadingGraphSummary = ref(false);
-const loadingGraphRegistry = ref(false);
 const loadingShowcase = ref(false);
 const searching = ref(false);
 const loadingEntityDetail = ref(false);
-const loadingEntityPathways = ref(false);
 const predictingNer = ref(false);
 const resolvingPredictedEntities = ref(false);
 const relationPredicting = ref(false);
 
 const graphError = ref("");
-const pathwayError = ref("");
 const searchError = ref("");
 const showcaseError = ref("");
 const nerError = ref("");
 const relationPredictError = ref("");
 const relationBatchMessage = ref("");
-const manualGraphRelationError = ref("");
-const manualGraphRelationMessage = ref("");
-const graphVersionMessage = ref("");
-const switchingGraphVersion = ref(false);
 
 const keyword = ref("桂枝汤");
 const entityType = ref("FORMULA");
@@ -111,41 +77,27 @@ const nerInputText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主
 const relationInputText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主之。");
 const relationHeadKey = ref("");
 const relationTailKey = ref("");
-const manualRelationLabel = ref("SYNDROME_TO_FORMULA");
-const graphManualRelationType = ref("SYNDROME_TO_FORMULA");
-const graphManualRelationDirection = ref<"outgoing" | "incoming">("outgoing");
-const graphManualRelationKeyword = ref("");
-const graphManualRelationCandidates = ref<GraphEntity[]>([]);
-const graphManualRelationTargetId = ref("");
 const searchResults = ref<GraphEntity[]>([]);
 const searchTotal = ref(0);
-const clauseResults = ref<GraphClauseSearchRecord[]>([]);
-const clauseTotal = ref(0);
-const selectedClauseDetail = ref<GraphClauseDetail | null>(null);
-const manualEntityText = ref("");
-const manualEntityType = ref("SYMPTOM");
-const manualEntityStart = ref("");
-const manualEntityNote = ref("");
-const manualEntityError = ref("");
-const entityDisplayNotes = ref<Record<string, string>>({});
-const selectedGraphVersionId = ref("");
+const corpusResults = ref<CorpusEntry[]>([]);
+const corpusTotal = ref(0);
 
 const entityTypeOptions = [
-  { label: formatEntityTypeLabel("FORMULA"), value: "FORMULA" },
-  { label: formatEntityTypeLabel("SYNDROME"), value: "SYNDROME" },
-  { label: formatEntityTypeLabel("SYMPTOM"), value: "SYMPTOM" },
-  { label: formatEntityTypeLabel("HERB"), value: "HERB" },
-  { label: formatEntityTypeLabel("THERAPY"), value: "THERAPY" },
-  { label: formatEntityTypeLabel("ADMINISTRATION"), value: "ADMINISTRATION" },
+  { label: "方剂", value: "FORMULA" },
+  { label: "证候", value: "SYNDROME" },
+  { label: "症状", value: "SYMPTOM" },
+  { label: "中药", value: "HERB" },
+  { label: "治法", value: "THERAPY" },
+  { label: "服法", value: "ADMINISTRATION" },
 ];
 
-const editableRelationOptions = [
-  { label: formatRelationTypeLabel("SYNDROME_HAS_SYMPTOM"), value: "SYNDROME_HAS_SYMPTOM" },
-  { label: formatRelationTypeLabel("SYNDROME_TO_FORMULA"), value: "SYNDROME_TO_FORMULA" },
-  { label: `${formatRelationTypeLabel("SYNDROME_TO_THERAPY")}（${t("common.manual")}）`, value: "SYNDROME_TO_THERAPY" },
-  { label: formatRelationTypeLabel("FORMULA_CONTAINS_HERB"), value: "FORMULA_CONTAINS_HERB" },
-  { label: formatRelationTypeLabel("FORMULA_HAS_ADMINISTRATION"), value: "FORMULA_HAS_ADMINISTRATION" },
-];
+const relationLabels: Record<string, string> = {
+  SYNDROME_HAS_SYMPTOM: "证候具有症状",
+  SYNDROME_TO_FORMULA: "证候对应方剂",
+  FORMULA_CONTAINS_HERB: "方剂包含中药",
+  FORMULA_HAS_ADMINISTRATION: "方剂对应服法",
+  NO_RELATION: "无稳定关系",
+};
 
 const relationPairPriority: Record<string, number> = {
   "SYNDROME->FORMULA": 0,
@@ -154,14 +106,19 @@ const relationPairPriority: Record<string, number> = {
   "FORMULA->ADMINISTRATION": 3,
 };
 
-const pathwayTypeLabels: Record<string, string> = {
-  SYNDROME_TO_FORMULA: "explorer.pathType.syndromeFormula",
-  SYMPTOM_SYNDROME_FORMULA: "explorer.pathType.symptomSyndromeFormula",
-  SYNDROME_FORMULA_HERB: "explorer.pathType.syndromeFormulaHerb",
-  SYNDROME_FORMULA_ADMINISTRATION: "explorer.pathType.syndromeFormulaAdministration",
-  FORMULA_HERB: "explorer.pathType.formulaHerb",
-  FORMULA_ADMINISTRATION: "explorer.pathType.formulaAdministration",
-  SYNDROME_SYMPTOM: "explorer.pathType.syndromeSymptom",
+// 动态统计图表引用
+const searchTypeChartRef = ref<HTMLElement | null>(null);
+const searchTopEntitiesRef = ref<HTMLElement | null>(null);
+let searchTypeChart: echarts.ECharts | null = null;
+let searchTopEntitiesChart: echarts.ECharts | null = null;
+
+const entityTypeLabels: Record<string, string> = {
+  FORMULA: "方剂",
+  SYNDROME: "证候",
+  SYMPTOM: "症状",
+  HERB: "中药",
+  THERAPY: "治法",
+  ADMINISTRATION: "服法",
 };
 
 const quickStats = computed(() => {
@@ -169,22 +126,231 @@ const quickStats = computed(() => {
     return [];
   }
   return [
-    { label: t("explorer.stats.nodes"), value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
-    { label: t("explorer.stats.relations"), value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
-    { label: t("explorer.stats.evidence"), value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
+    { label: "节点", value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
+    { label: "关系", value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
+    { label: "证据边", value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
   ];
 });
 
-const graphVersionOptions = computed(() => graphRegistry.value?.versions ?? []);
-const graphQuerySourceLabel = computed(() => {
-  const source = String((graphSummary.value as Record<string, unknown> | null)?.query_source || "").toLowerCase();
-  if (source === "neo4j") {
-    return t("explorer.graphVersion.querySourceNeo4j");
-  }
-  return t("explorer.graphVersion.querySourceCsv");
+const predictedEntities = computed(() => nerPrediction.value?.entities ?? []);
+
+
+// 搜索结果的实体类型分布（动态统计）
+const searchEntityTypeData = computed(() => {
+  if (!searchResults.value || searchResults.value.length === 0) return [];
+  
+  const counts: Record<string, number> = {};
+  searchResults.value.forEach(entity => {
+    counts[entity.entity_type] = (counts[entity.entity_type] || 0) + 1;
+  });
+  
+  return Object.entries(counts).map(([type, count]) => ({
+    name: entityTypeLabels[type] || type,
+    value: count
+  }));
 });
 
-const predictedEntities = computed(() => nerPrediction.value?.entities ?? []);
+// 搜索结果的高频实体（按提及次数）
+const searchTopEntitiesData = computed(() => {
+  if (!searchResults.value || searchResults.value.length === 0) return [];
+  
+  return searchResults.value
+    .map(entity => ({
+      name: entity.name,
+      value: entity.mention_count,
+      type: entityTypeLabels[entity.entity_type] || entity.entity_type
+    }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5); // TOP 5
+});
+
+// 搜索统计摘要
+const searchStatsSummary = computed(() => {
+  if (!searchResults.value) return { total: 0, types: 0 };
+  const types = new Set(searchResults.value.map(e => e.entity_type)).size;
+  return {
+    total: searchTotal.value || searchResults.value.length,
+    types
+  };
+});
+
+// 初始化/更新搜索类型分布图表
+function initSearchTypeChart() {
+  if (!searchTypeChartRef.value) return;
+  
+  if (!searchTypeChart) {
+    searchTypeChart = echarts.init(searchTypeChartRef.value);
+  }
+  
+  const data = searchEntityTypeData.value;
+  const option: echarts.EChartsOption = {
+    title: {
+      text: '实体类型分布',
+      left: 'center',
+      textStyle: {
+        fontSize: 14,
+        color: '#8c5e34'
+      }
+    },
+    tooltip: {
+      trigger: 'item',
+      formatter: '{a} <br/>{b}: {c} ({d}%)'
+    },
+    legend: {
+      bottom: 10,
+      textStyle: {
+        fontSize: 12,
+        color: '#5d4a38'
+      }
+    },
+    series: [
+      {
+        name: '实体类型',
+        type: 'pie',
+        radius: ['40%', '70%'],
+        avoidLabelOverlap: false,
+        itemStyle: {
+          borderRadius: 10,
+          borderColor: '#fff',
+          borderWidth: 2
+        },
+        label: {
+          show: true,
+          formatter: '{b}\n{d}%',
+          fontSize: 12,
+          color: '#5d4a38'
+        },
+        labelLine: {
+          show: true,
+          lineStyle: {
+            color: '#8c5e34'
+          }
+        },
+        data: data.map(item => ({
+          value: item.value,
+          name: item.name,
+          itemStyle: {
+            color: ['#7d4f2b', '#6a7d65', '#8c5e34', '#9b7653', '#a0826d'][Math.floor(Math.random() * 5)]
+          }
+        }))
+      }
+    ]
+  };
+  
+  searchTypeChart.setOption(option);
+}
+
+// 初始化/更新高频实体图表
+function initSearchTopEntitiesChart() {
+  if (!searchTopEntitiesRef.value) return;
+  
+  if (!searchTopEntitiesChart) {
+    searchTopEntitiesChart = echarts.init(searchTopEntitiesRef.value);
+  }
+  
+  const data = searchTopEntitiesData.value;
+  const option: echarts.EChartsOption = {
+    title: {
+      text: '高频实体TOP5',
+      left: 'center',
+      textStyle: {
+        fontSize: 14,
+        color: '#8c5e34'
+      }
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'shadow'
+      },
+      formatter: (params: any) => {
+        const item = params[0];
+        return `${item.name}<br/>提及次数: ${item.value}<br/>类型: ${data[item.dataIndex]?.type || ''}`;
+      }
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '15%',
+      top: '20%',
+      containLabel: true
+    },
+    xAxis: {
+      type: 'value',
+      name: '提及次数',
+      nameTextStyle: {
+        fontSize: 11,
+        color: '#8c5e34'
+      },
+      axisLabel: {
+        fontSize: 11,
+        color: '#5d4a38'
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#8c5e34'
+        }
+      }
+    },
+    yAxis: {
+      type: 'category',
+      data: data.map(item => item.name).reverse(),
+      axisLabel: {
+        fontSize: 11,
+        color: '#5d4a38',
+        width: 60,
+        overflow: 'truncate'
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#8c5e34'
+        }
+      }
+    },
+    series: [
+      {
+        name: '提及次数',
+        type: 'bar',
+        data: data.map(item => item.value).reverse(),
+        itemStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+            { offset: 0, color: '#a0826d' },
+            { offset: 1, color: '#7d4f2b' }
+          ]),
+          borderRadius: [0, 8, 8, 0]
+        },
+        label: {
+          show: true,
+          position: 'right',
+          fontSize: 11,
+          color: '#5d4a38'
+        }
+      }
+    ]
+  };
+  
+  searchTopEntitiesChart.setOption(option);
+}
+
+// 更新所有统计图表
+function updateCharts() {
+  // 使用 setTimeout 确保 DOM 已经更新
+  setTimeout(() => {
+    if (searchResults.value.length > 0) {
+      initSearchTypeChart();
+      initSearchTopEntitiesChart();
+    } else {
+      // 清空图表
+      if (searchTypeChart) {
+        searchTypeChart.clear();
+      }
+      if (searchTopEntitiesChart) {
+        searchTopEntitiesChart.clear();
+      }
+    }
+  }, 100);
+}
+
 
 const predictedTypeBreakdown = computed(() => {
   const counts = predictedEntities.value.reduce<Record<string, number>>((accumulator, entity) => {
@@ -205,12 +371,15 @@ const predictionMatchSummary = computed(() => {
 
 const selectedHeadEntity = computed(() => getPredictedEntityByKey(relationHeadKey.value));
 const selectedTailEntity = computed(() => getPredictedEntityByKey(relationTailKey.value));
-const selectedManualGraphTarget = computed(
-  () => graphManualRelationCandidates.value.find((item) => item.entity_id === graphManualRelationTargetId.value) || null,
-);
 const canRunRelation = computed(() => Boolean(selectedHeadEntity.value && selectedTailEntity.value && relationInputText.value.trim()));
 const batchRelationPairs = computed(() => {
-  const pairs: Array<{ key: string; head: NerPredictionEntity; tail: NerPredictionEntity; priority: number }> = [];
+  const pairs: Array<{
+    key: string;
+    head: NerPredictionEntity;
+    tail: NerPredictionEntity;
+    priority: number;
+    enabled: boolean;
+  }> = [];
   predictedEntities.value.forEach((head, headIndex) => {
     predictedEntities.value.forEach((tail, tailIndex) => {
       if (headIndex === tailIndex) {
@@ -225,6 +394,7 @@ const batchRelationPairs = computed(() => {
         head,
         tail,
         priority: relationPairPriority[pairKey],
+        enabled: true,
       });
     });
   });
@@ -235,7 +405,26 @@ const batchRelationPairs = computed(() => {
     return left.head.start - right.head.start || left.tail.start - right.tail.start;
   });
 });
-const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length && relationInputText.value.trim()));
+const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length > 0 && relationInputText.value.trim()));
+const selectedBatchPairs = ref<Set<string>>(new Set());
+
+function toggleBatchPair(pairKey: string) {
+  const newSet = new Set(selectedBatchPairs.value);
+  if (newSet.has(pairKey)) {
+    newSet.delete(pairKey);
+  } else {
+    newSet.add(pairKey);
+  }
+  selectedBatchPairs.value = newSet;
+}
+
+function selectAllBatchPairs() {
+  selectedBatchPairs.value = new Set(batchRelationPairs.value.map((p) => p.key));
+}
+
+function clearAllBatchPairs() {
+  selectedBatchPairs.value = new Set();
+}
 
 const sessionGraphNodes = computed<SessionGraphNode[]>(() => {
   const entities = predictedEntities.value;
@@ -257,7 +446,6 @@ const sessionGraphEdges = computed<SessionGraphEdge[]>(() => {
     .filter((item) => item.label !== "NO_RELATION")
     .map((item) => ({
       key: `${item.head.start}-${item.head.end}-${item.tail.start}-${item.tail.end}-${item.label}`,
-      recordKey: relationRecordKey(item),
       headKey: predictedEntityKey(item.head),
       tailKey: predictedEntityKey(item.tail),
       label: item.label,
@@ -298,7 +486,6 @@ const sessionGraphExportPayload = computed(() => ({
     type: node.entity.type,
     start: node.entity.start,
     end: node.entity.end,
-    note_text: entityDisplayNotes.value[node.key] || "",
     match_count: node.matches.length,
     best_match: node.matches[0]
       ? {
@@ -363,54 +550,25 @@ const chainSummary = computed(() => {
     const administrations = outgoing.filter((item) => item.relation_type === "FORMULA_HAS_ADMINISTRATION").map((item) => item.related_entity.name);
 
     return [
-      syndromes.length ? tf("explorer.chain.syndrome", { value: syndromes.slice(0, 4).join("、") }) : t("explorer.chain.syndromeEmpty"),
-      herbs.length ? tf("explorer.chain.herb", { value: herbs.slice(0, 6).join("、") }) : t("explorer.chain.herbEmpty"),
-      administrations.length
-        ? tf("explorer.chain.administration", { value: administrations.slice(0, 3).join("、") })
-        : t("explorer.chain.administrationEmpty"),
+      syndromes.length ? `证候: ${syndromes.slice(0, 4).join("、")}` : "证候: 暂无明确证候链路",
+      herbs.length ? `中药: ${herbs.slice(0, 6).join("、")}` : "中药: 暂无药味关系",
+      administrations.length ? `服法: ${administrations.slice(0, 3).join("、")}` : "服法: 暂无服法关系",
     ];
   }
 
   return [
-    tf("explorer.chain.entityType", { value: formatEntityType(entity.entity_type) }),
-    tf("explorer.chain.incomingCount", { count: selectedEntityDetail.value.stats.incoming_relation_count }),
-    tf("explorer.chain.outgoingCount", { count: selectedEntityDetail.value.stats.outgoing_relation_count }),
+    `实体类型: ${entityTypeLabels[entity.entity_type] || entity.entity_type}`,
+    `入边数量: ${selectedEntityDetail.value.stats.incoming_relation_count}`,
+    `出边数量: ${selectedEntityDetail.value.stats.outgoing_relation_count}`,
   ];
 });
 
 function formatEntityType(entityTypeName: string) {
-  return formatEntityTypeLabel(entityTypeName);
+  return entityTypeLabels[entityTypeName] || entityTypeName;
 }
 
 function formatRelationType(relationType: string) {
-  return formatRelationTypeLabel(relationType);
-}
-
-function formatEntryType(entryType: string | null) {
-  if (!entryType) {
-    return t("common.unknown");
-  }
-  if (entryType === "formula_entry") {
-    return t("explorer.entryType.formula");
-  }
-  if (entryType === "syndrome_entry") {
-    return t("explorer.entryType.syndrome");
-  }
-  return entryType;
-}
-
-function formatPathwayType(pathType: string) {
-  return pathwayTypeLabels[pathType] ? t(pathwayTypeLabels[pathType]) : pathType;
-}
-
-function toDisplayCount(value: unknown) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function toDisplayText(value: unknown) {
-  const text = String(value ?? "").trim();
-  return text || t("common.unknown");
+  return relationLabels[relationType] || relationType;
 }
 
 function predictedEntityKey(entity: NerPredictionEntity) {
@@ -425,187 +583,12 @@ function getPredictedMatches(entity: NerPredictionEntity) {
   return predictedGraphMatches.value[predictedEntityKey(entity)] ?? [];
 }
 
-function relationRecordKey(prediction: Pick<RelationPrediction, "head" | "tail">) {
-  return `${prediction.head.start}-${prediction.head.end}-${prediction.tail.start}-${prediction.tail.end}`;
-}
-
-async function resolveSinglePredictedEntityToGraph(entity: NerPredictionEntity) {
-  const key = predictedEntityKey(entity);
-  try {
-    const payload = await searchGraphEntities({ keyword: entity.text, entityType: entity.type, limit: 3 });
-    predictedGraphMatches.value = {
-      ...predictedGraphMatches.value,
-      [key]: payload.results,
-    };
-  } catch {
-    predictedGraphMatches.value = {
-      ...predictedGraphMatches.value,
-      [key]: [],
-    };
-  }
-}
-
 function entityPreviewText(entity: NerPredictionEntity) {
   return `${entity.text} · ${formatEntityType(entity.type)} · ${entity.start}-${entity.end}`;
 }
 
-function resetManualEntityForm() {
-  manualEntityText.value = "";
-  manualEntityType.value = "SYMPTOM";
-  manualEntityStart.value = "";
-  manualEntityNote.value = "";
-  manualEntityError.value = "";
-}
-
-function resetManualRelationState() {
-  manualRelationLabel.value = "SYNDROME_TO_FORMULA";
-}
-
-function findAllEntityPositions(text: string, needle: string) {
-  const positions: number[] = [];
-  let fromIndex = 0;
-  while (fromIndex < text.length) {
-    const foundIndex = text.indexOf(needle, fromIndex);
-    if (foundIndex === -1) {
-      break;
-    }
-    positions.push(foundIndex);
-    fromIndex = foundIndex + 1;
-  }
-  return positions;
-}
-
-async function addManualEntity() {
-  manualEntityError.value = "";
-  exportMessage.value = "";
-
-  if (!nerPrediction.value) {
-    manualEntityError.value = t("explorer.errors.entityAddRunNerFirst");
-    return;
-  }
-
-  const text = manualEntityText.value.trim();
-  if (!text) {
-    manualEntityError.value = t("explorer.errors.entityAddTextRequired");
-    return;
-  }
-
-  const sourceText = nerPrediction.value.text;
-  let start: number | null = null;
-
-  if (manualEntityStart.value.trim()) {
-    const parsed = Number.parseInt(manualEntityStart.value.trim(), 10);
-    if (Number.isNaN(parsed) || parsed < 0) {
-      manualEntityError.value = t("explorer.errors.entityAddInvalidStart");
-      return;
-    }
-    start = parsed;
-  } else {
-    const positions = findAllEntityPositions(sourceText, text);
-    if (!positions.length) {
-      manualEntityError.value = t("explorer.errors.entityAddTextNotFound");
-      return;
-    }
-    if (positions.length > 1) {
-      manualEntityError.value = tf("explorer.errors.entityAddNeedStart", { text, count: positions.length });
-      return;
-    }
-    start = positions[0];
-  }
-
-  const end = start + text.length;
-  if (sourceText.slice(start, end) !== text) {
-    manualEntityError.value = t("explorer.errors.entityAddStartMismatch");
-    return;
-  }
-
-  const entity: NerPredictionEntity = {
-    text,
-    type: manualEntityType.value,
-    start,
-    end,
-  };
-  const entityKey = predictedEntityKey(entity);
-  const duplicate = predictedEntities.value.some((item) => predictedEntityKey(item) === entityKey);
-  if (duplicate) {
-    manualEntityError.value = t("explorer.errors.entityAddDuplicate");
-    return;
-  }
-
-  nerPrediction.value = {
-    ...nerPrediction.value,
-    entities: [...predictedEntities.value, entity].sort((left, right) => left.start - right.start || left.end - right.end),
-  };
-
-  if (manualEntityNote.value.trim()) {
-    entityDisplayNotes.value = {
-      ...entityDisplayNotes.value,
-      [entityKey]: manualEntityNote.value.trim(),
-    };
-  }
-
-  await resolveSinglePredictedEntityToGraph(entity);
-
-  if (!relationHeadKey.value) {
-    relationHeadKey.value = entityKey;
-  } else if (!relationTailKey.value && relationHeadKey.value !== entityKey) {
-    relationTailKey.value = entityKey;
-  }
-
-  exportMessage.value = tf("explorer.messages.entityAdded", { text });
-  resetManualEntityForm();
-}
-
-function removePredictedEntity(target: NerPredictionEntity) {
-  if (!nerPrediction.value) {
-    return;
-  }
-
-  const targetKey = predictedEntityKey(target);
-  const nextEntities = predictedEntities.value.filter((entity) => predictedEntityKey(entity) !== targetKey);
-  nerPrediction.value = {
-    ...nerPrediction.value,
-    entities: nextEntities,
-  };
-
-  const nextMatches = { ...predictedGraphMatches.value };
-  delete nextMatches[targetKey];
-  predictedGraphMatches.value = nextMatches;
-
-  const nextNotes = { ...entityDisplayNotes.value };
-  delete nextNotes[targetKey];
-  entityDisplayNotes.value = nextNotes;
-
-  relationHistory.value = relationHistory.value.filter((item) => {
-    const headKey = predictedEntityKey(item.head);
-    const tailKey = predictedEntityKey(item.tail);
-    return headKey !== targetKey && tailKey !== targetKey;
-  });
-
-  if (
-    relationPrediction.value &&
-    (predictedEntityKey(relationPrediction.value.head) === targetKey || predictedEntityKey(relationPrediction.value.tail) === targetKey)
-  ) {
-    relationPrediction.value = null;
-  }
-
-  if (relationHeadKey.value === targetKey) {
-    relationHeadKey.value = "";
-  }
-  if (relationTailKey.value === targetKey) {
-    relationTailKey.value = "";
-  }
-
-  relationBatchMessage.value = "";
-  relationPredictError.value = "";
-  exportMessage.value = tf("explorer.messages.entityRemoved", { text: target.text });
-}
-
 function graphCandidateSummary(candidate: GraphEntity) {
-  return tf("explorer.messages.candidateSummary", {
-    mentionCount: candidate.mention_count,
-    recordCount: candidate.record_count,
-  });
+  return `提及 ${candidate.mention_count} 次 · 覆盖 ${candidate.record_count} 条`;
 }
 
 function assignRelationEntity(role: "head" | "tail", entity: NerPredictionEntity) {
@@ -633,13 +616,11 @@ function autoSelectRelationPair(entities: NerPredictionEntity[]) {
   if (syndrome && formula) {
     relationHeadKey.value = predictedEntityKey(syndrome);
     relationTailKey.value = predictedEntityKey(formula);
-    manualRelationLabel.value = "SYNDROME_TO_FORMULA";
     return;
   }
   if (syndrome && symptom) {
     relationHeadKey.value = predictedEntityKey(syndrome);
     relationTailKey.value = predictedEntityKey(symptom);
-    manualRelationLabel.value = "SYNDROME_HAS_SYMPTOM";
     return;
   }
   relationHeadKey.value = entities[0] ? predictedEntityKey(entities[0]) : "";
@@ -647,56 +628,9 @@ function autoSelectRelationPair(entities: NerPredictionEntity[]) {
 }
 
 function recordRelationPrediction(prediction: RelationPrediction) {
-  const key = relationRecordKey(prediction);
-  const filtered = relationHistory.value.filter((item) => relationRecordKey(item) !== key);
+  const key = `${prediction.head.start}-${prediction.head.end}-${prediction.tail.start}-${prediction.tail.end}`;
+  const filtered = relationHistory.value.filter((item) => `${item.head.start}-${item.head.end}-${item.tail.start}-${item.tail.end}` !== key);
   relationHistory.value = [...filtered, prediction];
-}
-
-function applyManualRelation() {
-  if (!selectedHeadEntity.value || !selectedTailEntity.value) {
-    relationPredictError.value = t("explorer.errors.manualRelationSelectEntities");
-    return;
-  }
-  if (predictedEntityKey(selectedHeadEntity.value) === predictedEntityKey(selectedTailEntity.value)) {
-    relationPredictError.value = t("explorer.errors.relationHeadTailSame");
-    return;
-  }
-
-  const prediction: RelationPrediction = {
-    text: relationInputText.value.trim(),
-    sequence_text: relationInputText.value.trim(),
-    head: selectedHeadEntity.value,
-    tail: selectedTailEntity.value,
-    label: manualRelationLabel.value,
-    confidence: 1,
-    top_predictions: [{ label: manualRelationLabel.value, score: 1 }],
-    source_mode: "manual",
-  };
-
-  relationPredictError.value = "";
-  relationBatchMessage.value =
-    manualRelationLabel.value === "SYNDROME_TO_THERAPY"
-      ? t("explorer.messages.manualTherapyRelationOnly")
-      : t("explorer.messages.manualRelationOverwritten");
-  relationPrediction.value = prediction;
-  recordRelationPrediction(prediction);
-}
-
-function removeRelationPredictionByRecordKey(recordKey: string) {
-  const target = relationHistory.value.find((item) => relationRecordKey(item) === recordKey);
-  relationHistory.value = relationHistory.value.filter((item) => relationRecordKey(item) !== recordKey);
-  if (relationPrediction.value && relationRecordKey(relationPrediction.value) === recordKey) {
-    relationPrediction.value = null;
-  }
-  relationPredictError.value = "";
-  relationBatchMessage.value = target ? tf("explorer.messages.relationRemoved", { relation: formatRelationType(target.label) }) : "";
-}
-
-function inspectRelationPrediction(prediction: RelationPrediction) {
-  relationPrediction.value = prediction;
-  relationHeadKey.value = predictedEntityKey(prediction.head);
-  relationTailKey.value = predictedEntityKey(prediction.tail);
-  manualRelationLabel.value = prediction.label === "NO_RELATION" ? "SYNDROME_TO_FORMULA" : prediction.label;
 }
 
 async function loadGraphSummary() {
@@ -705,53 +639,9 @@ async function loadGraphSummary() {
   try {
     graphSummary.value = await fetchGraphSummary();
   } catch {
-    graphError.value = t("home.errors.graphSummaryLoadFailed");
+    graphError.value = "图谱摘要加载失败，请确认图谱接口可访问。";
   } finally {
     loadingGraphSummary.value = false;
-  }
-}
-
-async function loadGraphRegistry() {
-  loadingGraphRegistry.value = true;
-  graphError.value = "";
-  try {
-    graphRegistry.value = await fetchGraphRegistry();
-    selectedGraphVersionId.value = graphRegistry.value.active.id;
-  } catch {
-    graphError.value = t("explorer.errors.graphRegistryLoadFailed");
-  } finally {
-    loadingGraphRegistry.value = false;
-  }
-}
-
-async function runGraphVersionSwitch() {
-  if (!selectedGraphVersionId.value.trim()) {
-    graphError.value = t("explorer.errors.graphVersionRequired");
-    return;
-  }
-  switchingGraphVersion.value = true;
-  graphError.value = "";
-  graphVersionMessage.value = "";
-  try {
-    const payload = await activateGraphVersion(selectedGraphVersionId.value);
-    graphRegistry.value = payload.registry;
-    selectedGraphVersionId.value = payload.registry.active.id;
-    graphVersionMessage.value = tf("explorer.messages.graphVersionSwitched", {
-      runName: payload.record.run_name,
-    });
-
-    await Promise.all([loadGraphSummary(), loadShowcase(), loadManualGraphRelations()]);
-    if (selectedEntityDetail.value?.entity.entity_id) {
-      await loadEntityDetail(selectedEntityDetail.value.entity.entity_id, false);
-    }
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      graphError.value = String(error.response?.data?.detail || t("explorer.errors.graphVersionSwitchFailed"));
-    } else {
-      graphError.value = t("explorer.errors.graphVersionSwitchFailed");
-    }
-  } finally {
-    switchingGraphVersion.value = false;
   }
 }
 
@@ -762,165 +652,9 @@ async function loadShowcase() {
     const payload = await fetchGraphShowcase();
     showcaseCases.value = payload.cases;
   } catch {
-    showcaseError.value = t("home.errors.showcaseLoadFailed");
+    showcaseError.value = "典型案例加载失败，请检查图谱接口。";
   } finally {
     loadingShowcase.value = false;
-  }
-}
-
-async function loadManualGraphRelations() {
-  loadingManualRelations.value = true;
-  try {
-    const payload = await fetchGraphManualRelations();
-    manualRelationOverrides.value = payload.records;
-  } catch {
-    manualRelationOverrides.value = [];
-  } finally {
-    loadingManualRelations.value = false;
-  }
-}
-
-async function searchGraphManualRelationTargets() {
-  const normalizedKeyword = graphManualRelationKeyword.value.trim();
-  if (!normalizedKeyword) {
-    manualGraphRelationError.value = t("explorer.errors.graphManualKeywordRequired");
-    return;
-  }
-  manualGraphRelationError.value = "";
-  manualGraphRelationMessage.value = "";
-  try {
-    const payload = await searchGraphEntities({ keyword: normalizedKeyword, limit: 8 });
-    graphManualRelationCandidates.value = payload.results;
-    if (!payload.results.length) {
-      manualGraphRelationError.value = t("explorer.errors.graphManualTargetNotFound");
-      graphManualRelationTargetId.value = "";
-      return;
-    }
-    graphManualRelationTargetId.value = payload.results[0].entity_id;
-  } catch {
-    manualGraphRelationError.value = t("explorer.errors.graphManualTargetSearchFailed");
-  }
-}
-
-function buildRelationMutationPayloadFromDetail(relation: GraphRelation) {
-  const detail = selectedEntityDetail.value;
-  if (!detail) {
-    return null;
-  }
-  if (relation.direction === "outgoing") {
-    return {
-      startId: detail.entity.entity_id,
-      endId: relation.related_entity.entity_id,
-      relationType: relation.relation_type,
-    };
-  }
-  return {
-    startId: relation.related_entity.entity_id,
-    endId: detail.entity.entity_id,
-    relationType: relation.relation_type,
-  };
-}
-
-async function addManualGraphRelation() {
-  const detail = selectedEntityDetail.value;
-  if (!detail) {
-    manualGraphRelationError.value = t("explorer.errors.graphManualNeedCenterEntity");
-    return;
-  }
-  if (!selectedManualGraphTarget.value) {
-    manualGraphRelationError.value = t("explorer.errors.graphManualNeedTargetEntity");
-    return;
-  }
-
-  const startId = graphManualRelationDirection.value === "outgoing" ? detail.entity.entity_id : selectedManualGraphTarget.value.entity_id;
-  const endId = graphManualRelationDirection.value === "outgoing" ? selectedManualGraphTarget.value.entity_id : detail.entity.entity_id;
-
-  applyingManualGraphRelation.value = true;
-  manualGraphRelationError.value = "";
-  manualGraphRelationMessage.value = "";
-  try {
-    const payload = await upsertGraphManualRelation({
-      startId,
-      endId,
-      relationType: graphManualRelationType.value,
-      exampleText: detail.mentions[0]?.clause_text || detail.entity.name,
-      evidenceCount: 1,
-      recordIds: detail.mentions.slice(0, 3).map((item) => item.record_id),
-    });
-    manualRelationOverrides.value = payload.manual_relations.records;
-    await loadEntityDetail(detail.entity.entity_id, false);
-    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationAdded");
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRelationAddFailed"));
-    } else {
-      manualGraphRelationError.value = t("explorer.errors.graphManualRelationAddFailed");
-    }
-  } finally {
-    applyingManualGraphRelation.value = false;
-  }
-}
-
-async function suppressRelationFromDetail(relation: GraphRelation) {
-  const payload = buildRelationMutationPayloadFromDetail(relation);
-  if (!payload) {
-    manualGraphRelationError.value = t("explorer.errors.graphManualNoEntityDetail");
-    return;
-  }
-  applyingManualGraphRelation.value = true;
-  manualGraphRelationError.value = "";
-  manualGraphRelationMessage.value = "";
-  try {
-    const response = await suppressGraphRelation({
-      ...payload,
-      exampleText: relation.example_text || t("explorer.messages.graphManualSuppressExample"),
-    });
-    manualRelationOverrides.value = response.manual_relations.records;
-    await loadEntityDetail(selectedEntityDetail.value!.entity.entity_id, false);
-    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationSuppressed");
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRelationDeleteFailed"));
-    } else {
-      manualGraphRelationError.value = t("explorer.errors.graphManualRelationDeleteFailed");
-    }
-  } finally {
-    applyingManualGraphRelation.value = false;
-  }
-}
-
-async function rollbackManualOverride(overrideId: string) {
-  applyingManualGraphRelation.value = true;
-  manualGraphRelationError.value = "";
-  manualGraphRelationMessage.value = "";
-  try {
-    const response = await deleteGraphManualRelation(overrideId);
-    manualRelationOverrides.value = response.manual_relations.records;
-    if (selectedEntityDetail.value) {
-      await loadEntityDetail(selectedEntityDetail.value.entity.entity_id, false);
-    }
-    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationRollbackDone");
-  } catch (error: unknown) {
-    if (axios.isAxiosError(error)) {
-      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRollbackFailed"));
-    } else {
-      manualGraphRelationError.value = t("explorer.errors.graphManualRollbackFailed");
-    }
-  } finally {
-    applyingManualGraphRelation.value = false;
-  }
-}
-
-async function loadEntityPathways(entityId: string) {
-  loadingEntityPathways.value = true;
-  pathwayError.value = "";
-  try {
-    entityPathways.value = await fetchGraphEntityPathways(entityId, 12);
-  } catch {
-    entityPathways.value = null;
-    pathwayError.value = t("explorer.errors.pathwayLoadFailed");
-  } finally {
-    loadingEntityPathways.value = false;
   }
 }
 
@@ -935,28 +669,17 @@ async function loadEntityDetail(entityId: string, updateRoute = true) {
     if (updateRoute) {
       await router.replace({ query: { ...route.query, entityId } });
     }
-    await loadEntityPathways(entityId);
   } catch {
-    graphError.value = t("explorer.errors.entityDetailLoadFailed");
-    entityPathways.value = null;
-    pathwayError.value = "";
+    graphError.value = "实体详情加载失败，请稍后重试。";
   } finally {
     loadingEntityDetail.value = false;
-  }
-}
-
-async function loadClauseDetail(clauseId: string) {
-  try {
-    selectedClauseDetail.value = await fetchGraphClauseDetail(clauseId);
-  } catch {
-    selectedClauseDetail.value = null;
   }
 }
 
 async function runSearch(updateRoute = true) {
   const normalizedKeyword = keyword.value.trim();
   if (!normalizedKeyword) {
-    searchError.value = t("explorer.errors.searchKeywordRequired");
+    searchError.value = "请输入关键词后再检索。";
     return;
   }
 
@@ -964,21 +687,15 @@ async function runSearch(updateRoute = true) {
   searchError.value = "";
 
   try {
-    const [graphPayload, clausePayload] = await Promise.all([
+    const [graphPayload, corpusPayload] = await Promise.all([
       searchGraphEntities({ keyword: normalizedKeyword, entityType: entityType.value, limit: 10 }),
-      searchGraphClauses({ keyword: normalizedKeyword, page: 1, pageSize: 12 }),
+      searchCorpus(normalizedKeyword),
     ]);
 
     searchResults.value = graphPayload.results;
     searchTotal.value = graphPayload.total;
-    clauseResults.value = clausePayload.results;
-    clauseTotal.value = clausePayload.total;
-    const firstClauseId = clausePayload.results[0]?.clause_id || "";
-    if (firstClauseId) {
-      await loadClauseDetail(firstClauseId);
-    } else {
-      selectedClauseDetail.value = null;
-    }
+    corpusResults.value = corpusPayload.results;
+    corpusTotal.value = corpusPayload.total;
 
     let targetEntityId = typeof route.query.entityId === "string" ? route.query.entityId : "";
     const selectedExists = graphPayload.results.some((item) => item.entity_id === targetEntityId);
@@ -1000,11 +717,12 @@ async function runSearch(updateRoute = true) {
       await loadEntityDetail(targetEntityId, false);
     } else {
       selectedEntityDetail.value = null;
-      entityPathways.value = null;
-      pathwayError.value = "";
     }
+    
+    // 更新统计图表
+    updateCharts();
   } catch {
-    searchError.value = t("explorer.errors.searchFailed");
+    searchError.value = "检索失败，请检查后端服务、图谱接口或跨域配置。";
   } finally {
     searching.value = false;
   }
@@ -1034,7 +752,7 @@ async function resolvePredictedEntitiesToGraph(prediction: NerPrediction) {
 async function runNerPrediction() {
   const text = nerInputText.value.trim();
   if (!text) {
-    nerError.value = t("explorer.errors.nerInputRequired");
+    nerError.value = "请输入待抽取条文。";
     return;
   }
 
@@ -1049,16 +767,13 @@ async function runNerPrediction() {
   try {
     const prediction = await predictNer(text);
     nerPrediction.value = prediction;
-    entityDisplayNotes.value = {};
-    resetManualEntityForm();
-    resetManualRelationState();
     autoSelectRelationPair(prediction.entities);
     await resolvePredictedEntitiesToGraph(prediction);
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      nerError.value = String(error.response?.data?.detail || t("explorer.errors.nerFailedWithCheckpoint"));
+      nerError.value = String(error.response?.data?.detail || "NER 抽取失败，请确认模型检查点已加载。");
     } else {
-      nerError.value = t("explorer.errors.nerFailed");
+      nerError.value = "NER 抽取失败，请稍后重试。";
     }
   } finally {
     predictingNer.value = false;
@@ -1067,15 +782,15 @@ async function runNerPrediction() {
 
 async function runRelationPrediction() {
   if (!selectedHeadEntity.value || !selectedTailEntity.value) {
-    relationPredictError.value = t("explorer.errors.relationSelectHeadTail");
+    relationPredictError.value = "请先从抽取结果里选择头实体和尾实体。";
     return;
   }
   if (predictedEntityKey(selectedHeadEntity.value) === predictedEntityKey(selectedTailEntity.value)) {
-    relationPredictError.value = t("explorer.errors.relationHeadTailSame");
+    relationPredictError.value = "头实体和尾实体不能相同。";
     return;
   }
   if (!relationInputText.value.trim()) {
-    relationPredictError.value = t("explorer.errors.relationInputRequired");
+    relationPredictError.value = "请输入关系判断文本。";
     return;
   }
 
@@ -1094,22 +809,23 @@ async function runRelationPrediction() {
     recordRelationPrediction(prediction);
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      relationPredictError.value = String(error.response?.data?.detail || t("explorer.errors.relationFailedWithCheckpoint"));
+      relationPredictError.value = String(error.response?.data?.detail || "关系预测失败，请确认 RE 检查点已加载。");
     } else {
-      relationPredictError.value = t("explorer.errors.relationFailed");
+      relationPredictError.value = "关系预测失败，请稍后重试。";
     }
   } finally {
     relationPredicting.value = false;
   }
 }
 
-async function runBatchRelationPrediction() {
+async function runSelectedBatchRelationPrediction() {
   if (!relationInputText.value.trim()) {
-    relationPredictError.value = t("explorer.errors.relationInputRequired");
+    relationPredictError.value = "请输入关系判断文本。";
     return;
   }
-  if (!batchRelationPairs.value.length) {
-    relationPredictError.value = t("explorer.errors.batchNoPairs");
+  const selectedPairs = batchRelationPairs.value.filter((p) => selectedBatchPairs.value.has(p.key));
+  if (!selectedPairs.length) {
+    relationPredictError.value = "请至少选择一组实体对。";
     return;
   }
 
@@ -1122,7 +838,7 @@ async function runBatchRelationPrediction() {
   let failedCount = 0;
 
   try {
-    for (const pair of batchRelationPairs.value) {
+    for (const pair of selectedPairs) {
       try {
         const prediction = await predictRelation({
           text: relationInputText.value.trim(),
@@ -1140,16 +856,12 @@ async function runBatchRelationPrediction() {
       .filter((item) => item.label !== "NO_RELATION")
       .sort((left, right) => right.confidence - left.confidence)[0];
     relationPrediction.value = preferred || results[0] || null;
-    relationBatchMessage.value = tf("explorer.messages.batchRelationDone", {
-      total: results.length,
-      kept: results.filter((item) => item.label !== "NO_RELATION").length,
-      failedPart: failedCount ? tf("explorer.messages.batchRelationFailedPart", { failed: failedCount }) : "",
-    });
+    relationBatchMessage.value = `已批量判断 ${results.length} 组实体对，保留 ${results.filter((item) => item.label !== "NO_RELATION").length} 条非空关系${failedCount ? `，失败 ${failedCount} 组` : ""}。`;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      relationPredictError.value = String(error.response?.data?.detail || t("explorer.errors.batchRelationFailedWithCheckpoint"));
+      relationPredictError.value = String(error.response?.data?.detail || "批量关系判断失败，请确认 RE 检查点已加载。");
     } else {
-      relationPredictError.value = t("explorer.errors.batchRelationFailed");
+      relationPredictError.value = "批量关系判断失败，请稍后重试。";
     }
   } finally {
     batchRelationPredicting.value = false;
@@ -1184,15 +896,9 @@ async function jumpToPredictedEntity(entity: NerPredictionEntity) {
   await openEntityInGraph(entity);
 }
 
-async function openClauseRecord(item: GraphClauseSearchRecord) {
-  await loadClauseDetail(item.clause_id);
-  nerInputText.value = item.text;
-  relationInputText.value = item.text;
-}
-
 function downloadSessionGraph() {
   if (!sessionGraphNodes.value.length) {
-    exportMessage.value = t("explorer.errors.exportNoGraphData");
+    exportMessage.value = "当前没有可导出的会话图数据。";
     return;
   }
 
@@ -1209,15 +915,12 @@ function downloadSessionGraph() {
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
-  exportMessage.value = tf("explorer.messages.exportDone", {
-    nodeCount: sessionGraphNodes.value.length,
-    edgeCount: sessionGraphEdges.value.length,
-  });
+  exportMessage.value = `已导出 ${sessionGraphNodes.value.length} 个节点、${sessionGraphEdges.value.length} 条关系。`;
 }
 
 async function saveSessionCandidate() {
   if (!sessionGraphNodes.value.length) {
-    exportMessage.value = t("explorer.errors.saveCandidateNoData");
+    exportMessage.value = "当前没有可提交的候选记录。";
     return;
   }
 
@@ -1228,12 +931,12 @@ async function saveSessionCandidate() {
       source_page: "explore",
       session_payload: sessionGraphExportPayload.value as Record<string, unknown>,
     });
-    exportMessage.value = tf("explorer.messages.saveCandidateDone", { recordId: payload.record_id });
+    exportMessage.value = `已保存候选记录 ${payload.record_id}。`;
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      exportMessage.value = String(error.response?.data?.detail || t("explorer.errors.saveCandidateFailed"));
+      exportMessage.value = String(error.response?.data?.detail || "候选记录保存失败，请检查后端接口。");
     } else {
-      exportMessage.value = t("explorer.errors.saveCandidateFailedRetry");
+      exportMessage.value = "候选记录保存失败，请稍后重试。";
     }
   } finally {
     savingCandidate.value = false;
@@ -1257,7 +960,7 @@ async function applyRouteState() {
   const routeEntityType = typeof route.query.entityType === "string" ? route.query.entityType : "";
   const routeEntityId = typeof route.query.entityId === "string" ? route.query.entityId : "";
 
-  keyword.value = routeKeyword || t("explorer.defaultKeyword");
+  keyword.value = routeKeyword || "桂枝汤";
   entityType.value = routeEntityType || "FORMULA";
 
   await runSearch(false);
@@ -1280,10 +983,25 @@ async function openShowcaseCase(caseItem: GraphShowcaseCase) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadGraphSummary(), loadGraphRegistry(), loadShowcase(), loadManualGraphRelations()]);
+  await Promise.all([loadGraphSummary(), loadShowcase()]);
   await applyRouteState();
   await runNerPrediction();
+  
+  // 监听窗口大小变化，调整图表尺寸
+  window.addEventListener('resize', handleResize);
 });
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize);
+  // 销毁图表实例
+  searchTypeChart?.dispose();
+  searchTopEntitiesChart?.dispose();
+});
+
+function handleResize() {
+  searchTypeChart?.resize();
+  searchTopEntitiesChart?.resize();
+}
 
 watch(
   () => route.fullPath,
@@ -1297,31 +1015,16 @@ watch(
     <section class="panel explorer-hero">
       <div class="panel-header explorer-header">
         <div>
-          <p class="panel-kicker">{{ t("explorer.heroKicker") }}</p>
-          <h1>{{ t("explorer.heroTitle") }}</h1>
-          <p class="hero-description explorer-description">{{ t("explorer.heroDescription") }}</p>
+          <p class="panel-kicker">Graph Explorer</p>
+          <h1>图谱浏览</h1>
+          <p class="hero-description explorer-description">
+            在这里按实体类型检索知识节点，查看入边出边、原文条文证据，并把模型抽到的实体自动映射到已有图谱节点，再辅助判断关系。
+          </p>
         </div>
         <div class="explorer-actions">
-          <RouterLink to="/" class="ghost-link">{{ t("explorer.backToOverview") }}</RouterLink>
+          <RouterLink to="/" class="ghost-link">返回总览</RouterLink>
         </div>
       </div>
-
-      <div class="graph-version-strip">
-        <label>
-          <span>{{ t("explorer.graphVersion.label") }}</span>
-          <select v-model="selectedGraphVersionId" :disabled="loadingGraphRegistry || switchingGraphVersion">
-            <option v-for="item in graphVersionOptions" :key="item.id" :value="item.id">{{ item.run_name }}</option>
-          </select>
-        </label>
-        <button class="ghost-button" type="button" :disabled="loadingGraphRegistry || switchingGraphVersion" @click="runGraphVersionSwitch">
-          {{ switchingGraphVersion ? t("explorer.graphVersion.switching") : t("explorer.graphVersion.switch") }}
-        </button>
-        <p class="status-text">{{ t("explorer.graphVersion.querySource") }}：{{ graphQuerySourceLabel }}</p>
-      </div>
-
-      <StatePanel v-if="graphVersionMessage" tone="success">
-        <p>{{ graphVersionMessage }}</p>
-      </StatePanel>
 
       <div class="quick-stat-row">
         <article v-for="item in quickStats" :key="item.label" class="mini-stat-card">
@@ -1334,14 +1037,12 @@ watch(
     <section class="panel compact-showcase-panel">
       <div class="panel-header compact-header">
         <div>
-          <p class="panel-kicker">{{ t("explorer.quickCasesKicker") }}</p>
-            <h2>{{ t("explorer.quickCasesTitle") }}</h2>
+          <p class="panel-kicker">Quick Cases</p>
+          <h2>一键演示案例</h2>
         </div>
       </div>
-        <StatePanel v-if="showcaseError" tone="error">
-          <p>{{ showcaseError }}</p>
-        </StatePanel>
-        <div v-else class="compact-showcase-list">
+      <p v-if="showcaseError" class="status-text error">{{ showcaseError }}</p>
+      <div v-else class="compact-showcase-list">
         <button v-for="caseItem in showcaseCases" :key="caseItem.slug" type="button" class="compact-case-chip" @click="openShowcaseCase(caseItem)">
           <strong>{{ caseItem.entity.name }}</strong>
           <span>{{ caseItem.title }}</span>
@@ -1353,42 +1054,36 @@ watch(
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.extractionKicker") }}</p>
-            <h2>{{ t("explorer.extractionTitle") }}</h2>
+            <p class="panel-kicker">Model Assisted Extraction</p>
+            <h2>条文智能抽取</h2>
           </div>
         </div>
 
         <form class="model-form" @submit.prevent="runNerPrediction">
-          <textarea v-model="nerInputText" rows="5" :placeholder="t('explorer.nerInputPlaceholder')" />
+          <textarea v-model="nerInputText" rows="5" placeholder="输入一条《伤寒论》条文，系统会用当前 NER 模型先抽取实体。" />
           <div class="cta-row compact-cta-row">
-            <button class="primary-button" type="submit" :disabled="predictingNer">{{ predictingNer ? t("explorer.nerRunning") : t("explorer.runNer") }}</button>
+            <button class="primary-button" type="submit" :disabled="predictingNer">{{ predictingNer ? "抽取中..." : "运行 NER 抽取" }}</button>
           </div>
         </form>
 
-        <StatePanel v-if="nerError" tone="error">
-          <p>{{ nerError }}</p>
-        </StatePanel>
-        <div v-else class="inline-hint-row">
-          <HoverHint :text="t('explorer.nerHint')" :aria-label="t('explorer.extractionTitle')" />
-        </div>
+        <p v-if="nerError" class="status-text error">{{ nerError }}</p>
+        <p v-else class="status-text">当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。</p>
       </article>
 
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.predictionResultKicker") }}</p>
-            <h2>{{ t("explorer.predictionResultTitle") }}</h2>
+            <p class="panel-kicker">Prediction Result</p>
+            <h2>模型抽取结果</h2>
           </div>
         </div>
 
-        <div v-if="!nerPrediction" class="inline-hint-row">
-          <HoverHint :text="t('explorer.nerResultHint')" :aria-label="t('explorer.predictionResultTitle')" />
-        </div>
+        <p v-if="!nerPrediction" class="status-text">先运行一次抽取，这里会显示实体结果和类型分布。</p>
         <template v-else>
           <div class="prediction-summary-strip">
-            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.total") }}</span><strong>{{ predictionMatchSummary.total }}</strong></div>
-            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.matched") }}</span><strong>{{ predictionMatchSummary.matched }}</strong></div>
-            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.unmatched") }}</span><strong>{{ predictionMatchSummary.unmatched }}</strong></div>
+            <div class="breakdown-item"><span>抽取实体</span><strong>{{ predictionMatchSummary.total }}</strong></div>
+            <div class="breakdown-item"><span>成功映射</span><strong>{{ predictionMatchSummary.matched }}</strong></div>
+            <div class="breakdown-item"><span>待人工判断</span><strong>{{ predictionMatchSummary.unmatched }}</strong></div>
           </div>
 
           <div class="breakdown-list predicted-breakdown-list">
@@ -1398,35 +1093,7 @@ watch(
             </div>
           </div>
 
-          <div class="manual-entity-panel">
-            <div class="manual-entity-header">
-              <strong>{{ t("explorer.manualEntity.title") }}</strong>
-              <span>{{ t("explorer.manualEntity.desc") }}</span>
-            </div>
-            <div class="manual-entity-grid">
-              <input v-model="manualEntityText" type="text" :placeholder="t('explorer.manualEntity.textPlaceholder')" />
-              <select v-model="manualEntityType">
-                <option v-for="option in entityTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
-              <input v-model="manualEntityStart" type="text" inputmode="numeric" :placeholder="t('explorer.manualEntity.startPlaceholder')" />
-              <button class="ghost-button" type="button" @click="addManualEntity">{{ t("explorer.manualEntity.add") }}</button>
-            </div>
-            <textarea
-              v-model="manualEntityNote"
-              rows="2"
-              :placeholder="t('explorer.manualEntity.notePlaceholder')"
-            />
-            <StatePanel v-if="manualEntityError" tone="error">
-              <p>{{ manualEntityError }}</p>
-            </StatePanel>
-            <div v-else class="inline-hint-row">
-              <HoverHint :text="t('explorer.manualEntity.hint')" :aria-label="t('explorer.manualEntity.title')" />
-            </div>
-          </div>
-
-          <StatePanel v-if="resolvingPredictedEntities" tone="info">
-            <p>{{ t("explorer.mappingRunning") }}</p>
-          </StatePanel>
+          <p v-if="resolvingPredictedEntities" class="status-text">正在把抽取结果映射到图谱节点...</p>
 
           <div class="entity-chip-list explorer-entity-chip-list">
             <div v-for="entity in predictedEntities" :key="predictedEntityKey(entity)" class="entity-chip mapped-entity-chip">
@@ -1434,30 +1101,28 @@ watch(
               <span>{{ formatEntityType(entity.type) }}</span>
               <small>{{ entity.start }}-{{ entity.end }}</small>
               <p class="entity-preview-copy">{{ entityPreviewText(entity) }}</p>
-              <p v-if="entityDisplayNotes[predictedEntityKey(entity)]" class="entity-note-copy">{{ t("explorer.manualEntity.noteLabel") }}: {{ entityDisplayNotes[predictedEntityKey(entity)] }}</p>
 
               <div class="selection-strip">
-                <span class="selection-pill" :class="{ active: relationHeadKey === predictedEntityKey(entity) }">{{ t("explorer.relation.headEntity") }}</span>
-                <span class="selection-pill" :class="{ active: relationTailKey === predictedEntityKey(entity) }">{{ t("explorer.relation.tailEntity") }}</span>
+                <span class="selection-pill" :class="{ active: relationHeadKey === predictedEntityKey(entity) }">头实体</span>
+                <span class="selection-pill" :class="{ active: relationTailKey === predictedEntityKey(entity) }">尾实体</span>
               </div>
 
               <div class="candidate-panel">
-                <p class="candidate-title">{{ t("explorer.candidates.title") }}</p>
+                <p class="candidate-title">图谱候选节点</p>
                 <div v-if="getPredictedMatches(entity).length" class="candidate-list">
                   <button v-for="candidate in getPredictedMatches(entity)" :key="candidate.entity_id" type="button" class="candidate-chip" @click="openGraphCandidate(candidate)">
                     <strong>{{ candidate.name }}</strong>
                     <span>{{ graphCandidateSummary(candidate) }}</span>
                   </button>
                 </div>
-                <p v-else class="candidate-empty">{{ t("explorer.candidates.empty") }}</p>
+                <p v-else class="candidate-empty">当前图谱里没有稳定命中，建议先用它作为检索词人工确认。</p>
               </div>
 
               <div class="entity-chip-actions">
-                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('head', entity)">{{ t("explorer.actions.setHead") }}</button>
-                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">{{ t("explorer.actions.setTail") }}</button>
-                <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">{{ t("explorer.actions.setKeyword") }}</button>
-                <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">{{ t("explorer.actions.openBestMatch") }}</button>
-                <button class="ghost-button mini-button danger-button" type="button" @click="removePredictedEntity(entity)">{{ t("explorer.actions.deleteEntity") }}</button>
+                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('head', entity)">设为头实体</button>
+                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">设为尾实体</button>
+                <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">设为检索词</button>
+                <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">打开最佳映射</button>
               </div>
             </div>
           </div>
@@ -1469,85 +1134,74 @@ watch(
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.relationAssistantKicker") }}</p>
-            <h2>{{ t("explorer.relationAssistantTitle") }}</h2>
+            <p class="panel-kicker">Relation Assistant</p>
+            <h2>关系辅助判断</h2>
           </div>
         </div>
 
         <form class="model-form" @submit.prevent="runRelationPrediction">
-          <textarea v-model="relationInputText" rows="4" :placeholder="t('explorer.relation.inputPlaceholder')" />
+          <textarea v-model="relationInputText" rows="4" placeholder="输入或确认当前关系判断用的条文文本。" />
 
-          <p class="status-text">{{ tf("explorer.relation.batchCountHint", { count: batchRelationPairs.length }) }}</p>
-
-          <div class="relation-form-grid">
-            <div class="relation-form-block">
-              <label>{{ t("explorer.relation.headEntity") }}</label>
-              <div class="selected-entity-card" :class="{ active: Boolean(selectedHeadEntity) }">
-                <strong>{{ selectedHeadEntity?.text || t("explorer.relation.notSelected") }}</strong>
-                <span>{{ selectedHeadEntity ? formatEntityType(selectedHeadEntity.type) : t("explorer.relation.selectFromAbove") }}</span>
+          <div class="relation-batch-control">
+            <div class="relation-batch-header">
+              <span>可批量判断 {{ batchRelationPairs.length }} 组实体对（仅覆盖核心关系）</span>
+              <div class="batch-actions">
+                <button type="button" class="ghost-button mini-button" @click="selectAllBatchPairs">全选</button>
+                <button type="button" class="ghost-button mini-button" @click="clearAllBatchPairs">清空</button>
               </div>
             </div>
-            <div class="relation-form-block">
-              <label>{{ t("explorer.relation.tailEntity") }}</label>
-              <div class="selected-entity-card" :class="{ active: Boolean(selectedTailEntity) }">
-                <strong>{{ selectedTailEntity?.text || t("explorer.relation.notSelected") }}</strong>
-                <span>{{ selectedTailEntity ? formatEntityType(selectedTailEntity.type) : t("explorer.relation.selectFromAbove") }}</span>
+
+            <div class="batch-pair-list">
+              <div
+                v-for="pair in batchRelationPairs"
+                :key="pair.key"
+                class="batch-pair-item"
+                :class="{ selected: selectedBatchPairs.has(pair.key) }"
+                @click="toggleBatchPair(pair.key)"
+              >
+                <span class="pair-check">{{ selectedBatchPairs.has(pair.key) ? '✓' : '○' }}</span>
+                <span class="pair-head">{{ pair.head.text }} ({{ formatEntityType(pair.head.type) }})</span>
+                <span class="pair-arrow">→</span>
+                <span class="pair-tail">{{ pair.tail.text }} ({{ formatEntityType(pair.tail.type) }})</span>
               </div>
             </div>
           </div>
 
           <div class="cta-row compact-cta-row">
-            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">{{ relationPredicting ? t("explorer.relation.predicting") : t("explorer.relation.predict") }}</button>
-            <button class="ghost-button" type="button" :disabled="relationPredicting || batchRelationPredicting || !canRunBatchRelation" @click="runBatchRelationPrediction">
-              {{ batchRelationPredicting ? t("explorer.relation.batchPredicting") : t("explorer.relation.batchPredict") }}
+            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">
+              {{ relationPredicting ? '判断中...' : '运行关系判断' }}
             </button>
-          </div>
-
-          <div class="manual-relation-panel">
-            <div class="manual-relation-header">
-              <strong>{{ t("explorer.relation.manualTitle") }}</strong>
-              <span>{{ t("explorer.relation.manualDesc") }}</span>
-            </div>
-            <div class="manual-relation-grid">
-              <select v-model="manualRelationLabel">
-                <option v-for="option in editableRelationOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
-              <button class="ghost-button" type="button" :disabled="!canRunRelation" @click="applyManualRelation">{{ t("explorer.relation.manualApply") }}</button>
-            </div>
-            <div class="inline-hint-row">
-              <HoverHint :text="t('explorer.relation.manualTherapyHint')" :aria-label="t('explorer.relation.manualTitle')" />
-            </div>
+            <button
+              class="ghost-button"
+              type="button"
+              :disabled="relationPredicting || batchRelationPredicting || !selectedBatchPairs.size"
+              @click="runSelectedBatchRelationPrediction"
+            >
+              {{ batchRelationPredicting ? "批量判断中..." : `批量执行 (${selectedBatchPairs.size})` }}
+            </button>
           </div>
         </form>
 
-        <StatePanel v-if="relationPredictError" tone="error">
-          <p>{{ relationPredictError }}</p>
-        </StatePanel>
-        <StatePanel v-else-if="relationBatchMessage" tone="success">
-          <p>{{ relationBatchMessage }}</p>
-        </StatePanel>
-        <div v-else class="inline-hint-row">
-          <HoverHint :text="t('explorer.relation.modelHint')" :aria-label="t('explorer.relationAssistantTitle')" />
-        </div>
+        <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
+        <p v-else-if="relationBatchMessage" class="status-text">{{ relationBatchMessage }}</p>
+        <p v-else class="status-text">当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断"证候-方剂"或"证候-症状"是否成立。</p>
       </article>
 
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.relationResultKicker") }}</p>
-            <h2>{{ t("explorer.relationResultTitle") }}</h2>
+            <p class="panel-kicker">Relation Result</p>
+            <h2>关系预测结果</h2>
           </div>
         </div>
 
-        <div v-if="!relationPrediction" class="inline-hint-row">
-          <HoverHint :text="t('explorer.relation.resultHint')" :aria-label="t('explorer.relationResultTitle')" />
-        </div>
+        <p v-if="!relationPrediction" class="status-text">选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。</p>
         <template v-else>
           <div class="relation-result-card">
-            <div class="breakdown-item"><span>{{ t("models.predictedRelation") }}</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
-            <div class="breakdown-item"><span>{{ t("models.confidence") }}</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
-            <div class="breakdown-item"><span>{{ t("models.headEntity") }}</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
-            <div class="breakdown-item"><span>{{ t("models.tailEntity") }}</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
+            <div class="breakdown-item"><span>预测关系</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
+            <div class="breakdown-item"><span>置信度</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
+            <div class="breakdown-item"><span>头实体</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
+            <div class="breakdown-item"><span>尾实体</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
           </div>
 
           <div class="dataset-split-grid relation-score-grid">
@@ -1562,44 +1216,29 @@ watch(
     <section class="panel session-graph-panel">
       <div class="panel-header compact-header">
         <div>
-          <p class="panel-kicker">{{ t("explorer.sessionGraphKicker") }}</p>
-          <h2>{{ t("explorer.sessionGraphTitle") }}</h2>
+          <p class="panel-kicker">Session Graph</p>
+          <h2>本次条文临时会话图</h2>
         </div>
         <div class="session-action-group">
           <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="saveSessionCandidate">
-            {{ savingCandidate ? t("common.saving") : t("explorer.session.saveCandidate") }}
+            {{ savingCandidate ? "保存中..." : "提交候选记录" }}
           </button>
-          <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="downloadSessionGraph">{{ t("explorer.session.exportJson") }}</button>
+          <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="downloadSessionGraph">导出 JSON</button>
         </div>
       </div>
 
-      <div v-if="!predictedEntities.length" class="inline-hint-row">
-        <HoverHint :text="t('explorer.session.noEntitiesHint')" :aria-label="t('explorer.sessionGraphTitle')" />
-      </div>
+      <p v-if="!predictedEntities.length" class="status-text">先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。</p>
       <template v-else>
-        <StatePanel v-if="exportMessage" tone="success">
-          <p>{{ exportMessage }}</p>
-        </StatePanel>
-        <div v-else class="inline-hint-row">
-          <HoverHint :text="t('explorer.session.defaultHint')" :aria-label="t('explorer.sessionGraphTitle')" />
-        </div>
+        <p class="status-text">{{ exportMessage || '可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。' }}</p>
         <div class="session-graph-layout">
           <div class="session-graph-canvas">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
               <line v-for="edge in sessionGraphLines" :key="edge.key" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" class="session-graph-line" />
             </svg>
 
-            <button
-              v-for="edge in sessionGraphLines"
-              :key="`${edge.key}-label`"
-              type="button"
-              class="session-graph-edge-label"
-              :style="{ left: `${edge.midX}%`, top: `${edge.midY}%` }"
-              @click="removeRelationPredictionByRecordKey(edge.recordKey)"
-              :title="tf('explorer.session.edgeDeleteTitle', { relation: formatRelationType(edge.label) })"
-            >
+            <div v-for="edge in sessionGraphLines" :key="`${edge.key}-label`" class="session-graph-edge-label" :style="{ left: `${edge.midX}%`, top: `${edge.midY}%` }">
               {{ formatRelationType(edge.label) }}
-            </button>
+            </div>
 
             <button
               v-for="node in sessionGraphNodes"
@@ -1617,39 +1256,33 @@ watch(
 
           <div class="session-graph-sidebar">
             <div class="session-side-block">
-              <strong>{{ t("explorer.session.entityNodes") }}</strong>
+              <strong>实体节点</strong>
               <div class="session-side-list">
                 <div v-for="node in sessionGraphNodes" :key="`${node.key}-item`" class="session-side-card">
                   <span>{{ formatEntityType(node.entity.type) }}</span>
                   <strong>{{ node.entity.text }}</strong>
-                  <p v-if="entityDisplayNotes[node.key]">{{ entityDisplayNotes[node.key] }}</p>
-                  <p>{{ node.matches.length ? tf("explorer.session.mappedCandidates", { count: node.matches.length }) : t("explorer.session.noMappedCandidates") }}</p>
+                  <p>{{ node.matches.length ? `已映射 ${node.matches.length} 个候选` : '暂无映射候选' }}</p>
                 </div>
               </div>
             </div>
 
             <div class="session-side-block">
-              <strong>{{ t("explorer.session.predictedRelations") }}</strong>
+              <strong>已判断关系</strong>
               <div class="session-side-list">
                 <div v-if="!relationHistory.length" class="session-side-card empty">
-                  <p>{{ t("explorer.session.noRelationsHint") }}</p>
+                  <p>运行一次关系判断后，这里会累计本次条文的关系结果。</p>
                 </div>
-                <div
+                <button
                   v-for="item in relationHistory"
                   :key="`${item.head.start}-${item.tail.start}-${item.label}`"
+                  type="button"
                   class="session-side-card action-card"
+                  @click="openEntityInGraph(item.head)"
                 >
                   <span>{{ formatRelationType(item.label) }}</span>
                   <strong>{{ item.head.text }} -> {{ item.tail.text }}</strong>
-                  <p>
-                    {{ tf("explorer.session.confidence", { score: item.confidence.toFixed(4) }) }}
-                    <template v-if="item.source_mode === 'manual'"> · {{ t("common.manual") }}</template>
-                  </p>
-                  <div class="session-card-actions">
-                    <button type="button" class="ghost-button mini-button" @click="inspectRelationPrediction(item)">{{ t("explorer.actions.viewEdit") }}</button>
-                    <button type="button" class="ghost-button mini-button danger-button" @click="removeRelationPredictionByRecordKey(relationRecordKey(item))">{{ t("explorer.actions.deleteRelation") }}</button>
-                  </div>
-                </div>
+                  <p>置信度 {{ item.confidence.toFixed(4) }}</p>
+                </button>
               </div>
             </div>
           </div>
@@ -1661,13 +1294,13 @@ watch(
       <article class="panel search-panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.keywordSearchKicker") }}</p>
-            <h2>{{ t("explorer.keywordSearchTitle") }}</h2>
+            <p class="panel-kicker">Keyword Search</p>
+            <h2>实体检索</h2>
           </div>
         </div>
 
         <form class="search-form search-form-stacked" @submit.prevent="runSearch()">
-          <input v-model="keyword" type="text" :placeholder="t('explorer.searchInputPlaceholder')" />
+          <input v-model="keyword" type="text" placeholder="输入方剂、证候、症状或中药，例如：桂枝汤" />
 
           <div class="search-row">
             <div class="chip-group">
@@ -1675,19 +1308,12 @@ watch(
                 {{ option.label }}
               </button>
             </div>
-            <button class="primary-button" type="submit" :disabled="searching">{{ searching ? t("explorer.searching") : t("explorer.search") }}</button>
+            <button class="primary-button" type="submit" :disabled="searching">{{ searching ? '检索中...' : '开始检索' }}</button>
           </div>
         </form>
 
-        <StatePanel v-if="searchError" tone="error">
-          <p>{{ searchError }}</p>
-        </StatePanel>
-        <div v-else class="inline-hint-row">
-          <HoverHint
-            :text="tf('explorer.searchResultSummary', { entityCount: searchTotal, corpusCount: clauseTotal })"
-            :aria-label="t('explorer.keywordSearchTitle')"
-          />
-        </div>
+        <p v-if="searchError" class="status-text error">{{ searchError }}</p>
+        <p v-else class="status-text">图谱命中 {{ searchTotal }} 个实体，条文命中 {{ corpusTotal }} 条。</p>
 
         <div class="entity-result-list">
           <button v-for="entity in searchResults" :key="entity.entity_id" class="entity-result-card" :class="{ active: selectedEntityDetail?.entity.entity_id === entity.entity_id }" type="button" @click="loadEntityDetail(entity.entity_id)">
@@ -1695,171 +1321,38 @@ watch(
               <strong>{{ entity.name }}</strong>
               <span>{{ formatEntityType(entity.entity_type) }}</span>
             </div>
-            <p>
-              {{
-                tf("explorer.entityCardSummary", {
-                  mentionCount: toDisplayCount(entity.mention_count),
-                  recordCount: toDisplayCount(entity.record_count),
-                  firstRecordId: toDisplayText(entity.first_record_id),
-                })
-              }}
-            </p>
+            <p>提及 {{ entity.mention_count }} 次 · 覆盖 {{ entity.record_count }} 条 · 首次出现 {{ entity.first_record_id }}</p>
           </button>
         </div>
       </article>
 
-      <article class="panel network-panel">
+      <article class="panel stats-panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.relationPreviewKicker") }}</p>
-            <h2>{{ t("explorer.relationPreviewTitle") }}</h2>
+            <p class="panel-kicker">Search Statistics</p>
+            <h2>搜索动态统计</h2>
           </div>
         </div>
 
-        <StatePanel v-if="graphError" tone="error">
-          <p>{{ graphError }}</p>
-        </StatePanel>
-        <StatePanel v-else-if="loadingEntityDetail" tone="info">
-          <p>{{ t("explorer.loadingEntityDetail") }}</p>
-        </StatePanel>
-        <div v-else-if="!selectedEntityDetail" class="inline-hint-row">
-          <HoverHint :text="t('explorer.noEntitySelectedHint')" :aria-label="t('explorer.relationPreviewTitle')" />
-        </div>
-
+        <p v-if="searchResults.length === 0" class="status-text">执行搜索后，这里会显示实体类型分布和高频实体 TOP5 图表。</p>
         <template v-else>
-          <div class="entity-focus-card">
-            <div>
-              <p class="entity-type-tag">{{ formatEntityType(selectedEntityDetail.entity.entity_type) }}</p>
-              <h3>{{ selectedEntityDetail.entity.name }}</h3>
+          <div class="stats-summary-row">
+            <div class="mini-stat-item">
+              <span>实体总数</span>
+              <strong>{{ searchStatsSummary.total }}</strong>
             </div>
-            <div class="focus-metrics">
-              <span>{{ tf("explorer.focus.incoming", { count: selectedEntityDetail.stats.incoming_relation_count }) }}</span>
-              <span>{{ tf("explorer.focus.outgoing", { count: selectedEntityDetail.stats.outgoing_relation_count }) }}</span>
-              <span>{{ tf("explorer.focus.evidence", { count: selectedEntityDetail.stats.mention_count }) }}</span>
-            </div>
-          </div>
-
-          <div class="network-map">
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
-              <line v-for="node in networkNodes.slice(1)" :key="`${selectedEntityDetail.entity.entity_id}-${node.entity.entity_id}`" x1="50" y1="50" :x2="node.x" :y2="node.y" class="network-line" />
-            </svg>
-
-            <div v-for="node in networkNodes" :key="node.entity.entity_id" class="network-node" :class="node.accent" :style="{ left: `${node.x}%`, top: `${node.y}%` }">
-              <strong>{{ node.entity.name }}</strong>
-              <span>{{ formatEntityType(node.entity.entity_type) }}</span>
+            <div class="mini-stat-item">
+              <span>类型数量</span>
+              <strong>{{ searchStatsSummary.types }}</strong>
             </div>
           </div>
 
-          <div class="relation-columns">
-            <div class="relation-column">
-              <p class="column-title">{{ t("explorer.columns.chain") }}</p>
-              <div class="chain-list">
-                <div v-for="item in chainSummary" :key="item" class="chain-item">{{ item }}</div>
-              </div>
-
-              <p class="column-title pathway-title">{{ t("explorer.columns.pathway") }}</p>
-              <div class="chain-list">
-                <div v-if="loadingEntityPathways" class="chain-item">{{ t("explorer.pathway.loading") }}</div>
-                <div v-else-if="pathwayError" class="chain-item">{{ pathwayError }}</div>
-                <template v-else-if="entityPathways?.paths.length">
-                  <div v-for="pathway in entityPathways.paths.slice(0, 6)" :key="`${pathway.path_type}-${pathway.chain_text}`" class="chain-item pathway-item">
-                    <strong>{{ formatPathwayType(pathway.path_type) }}</strong>
-                    <p>{{ pathway.chain_text }}</p>
-                    <small>{{ tf("explorer.pathway.evidenceScore", { score: pathway.evidence_score }) }}</small>
-                  </div>
-                </template>
-                <div v-else class="chain-item">{{ t("explorer.pathway.empty") }}</div>
-              </div>
+          <div class="charts-grid">
+            <div class="chart-container">
+              <div ref="searchTypeChartRef" class="chart-box"></div>
             </div>
-
-            <div class="relation-column">
-              <p class="column-title">{{ t("explorer.columns.relation") }}</p>
-              <div class="manual-relation-panel graph-manual-relation-panel">
-                <div class="manual-relation-header">
-                  <strong>{{ t("explorer.graphManual.title") }}</strong>
-                  <span>{{ t("explorer.graphManual.desc") }}</span>
-                </div>
-                <div class="manual-relation-grid manual-relation-grid--dual">
-                  <select v-model="graphManualRelationDirection">
-                    <option value="outgoing">{{ t("explorer.graphManual.directionOutgoing") }}</option>
-                    <option value="incoming">{{ t("explorer.graphManual.directionIncoming") }}</option>
-                  </select>
-                  <select v-model="graphManualRelationType">
-                    <option v-for="option in editableRelationOptions" :key="`graph-manual-${option.value}`" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </div>
-                <div class="manual-relation-grid">
-                  <input v-model="graphManualRelationKeyword" type="text" :placeholder="t('explorer.graphManual.keywordPlaceholder')" />
-                  <button class="ghost-button" type="button" :disabled="applyingManualGraphRelation" @click="searchGraphManualRelationTargets">
-                    {{ t("explorer.graphManual.searchTarget") }}
-                  </button>
-                </div>
-                <div class="manual-relation-grid">
-                  <select v-model="graphManualRelationTargetId">
-                    <option value="">{{ t("explorer.graphManual.selectTarget") }}</option>
-                    <option v-for="candidate in graphManualRelationCandidates" :key="candidate.entity_id" :value="candidate.entity_id">
-                      {{ candidate.name }} / {{ formatEntityType(candidate.entity_type) }}
-                    </option>
-                  </select>
-                  <button class="ghost-button" type="button" :disabled="applyingManualGraphRelation || !graphManualRelationTargetId" @click="addManualGraphRelation">
-                    {{ t("explorer.graphManual.addRelation") }}
-                  </button>
-                </div>
-              </div>
-
-              <StatePanel v-if="manualGraphRelationError" tone="error">
-                <p>{{ manualGraphRelationError }}</p>
-              </StatePanel>
-              <StatePanel v-else-if="manualGraphRelationMessage" tone="success">
-                <p>{{ manualGraphRelationMessage }}</p>
-              </StatePanel>
-
-              <div class="relation-list">
-                <div v-for="relation in [...selectedEntityDetail.outgoing_relations, ...selectedEntityDetail.incoming_relations].slice(0, 8)" :key="`${relation.direction}-${relation.relation_type}-${relation.related_entity.entity_id}`" class="relation-item">
-                  <span>{{ relation.direction === 'outgoing' ? t("explorer.graphManual.outgoing") : t("explorer.graphManual.incoming") }}</span>
-                  <strong>{{ formatRelationType(relation.relation_type) }}</strong>
-                  <p>{{ tf("explorer.graphManual.relationEvidence", { name: relation.related_entity.name, count: relation.evidence_count }) }}</p>
-                  <div class="entity-chip-actions relation-item-actions">
-                    <button class="ghost-button mini-button danger-button" type="button" :disabled="applyingManualGraphRelation" @click="suppressRelationFromDetail(relation)">
-                      {{ t("explorer.actions.deleteRelation") }}
-                    </button>
-                    <button
-                      v-if="relation.manual_override && relation.manual_override_id"
-                      class="ghost-button mini-button"
-                      type="button"
-                      :disabled="applyingManualGraphRelation"
-                      @click="rollbackManualOverride(String(relation.manual_override_id))"
-                    >
-                      {{ t("explorer.graphManual.rollback") }}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="session-side-list graph-override-list">
-                <div v-if="loadingManualRelations" class="session-side-card empty">
-                  <p>{{ t("explorer.graphManual.loadingOverrides") }}</p>
-                </div>
-                <div v-else-if="!manualRelationOverrides.length" class="session-side-card empty">
-                  <p>{{ t("explorer.graphManual.noOverrides") }}</p>
-                </div>
-                <div v-else class="session-side-card">
-                  <strong>{{ t("explorer.graphManual.recentOverrides") }}</strong>
-                  <div class="session-side-list">
-                    <div v-for="item in manualRelationOverrides.slice(0, 4)" :key="item.id" class="session-side-card action-card">
-                      <span>{{ item.action === "upsert" ? t("explorer.graphManual.actionUpsert") : t("explorer.graphManual.actionSuppress") }} · {{ formatRelationType(item.relation_type) }}</span>
-                      <p>{{ item.start_id }} -> {{ item.end_id }}</p>
-                      <div class="session-card-actions">
-                        <button class="ghost-button mini-button" type="button" :disabled="applyingManualGraphRelation" @click="rollbackManualOverride(item.id)">
-                          {{ t("explorer.graphManual.rollback") }}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
+            <div class="chart-container">
+              <div ref="searchTopEntitiesRef" class="chart-box"></div>
             </div>
           </div>
         </template>
@@ -1870,20 +1363,18 @@ watch(
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.evidenceTracebackKicker") }}</p>
-            <h2>{{ t("explorer.evidenceTracebackTitle") }}</h2>
+            <p class="panel-kicker">Evidence Traceback</p>
+            <h2>原文证据回溯</h2>
           </div>
         </div>
 
-        <div v-if="!selectedEntityDetail" class="inline-hint-row">
-          <HoverHint :text="t('explorer.evidenceHint')" :aria-label="t('explorer.evidenceTracebackTitle')" />
-        </div>
+        <p v-if="!selectedEntityDetail" class="status-text">选择一个实体后，这里会显示它在条文中的出现位置与证据片段。</p>
         <div v-else class="evidence-list">
           <article v-for="mention in selectedEntityDetail.mentions" :key="`${mention.clause_id}-${mention.start}-${mention.end}`" class="evidence-card">
             <div class="evidence-meta">
               <span>{{ mention.record_id }}</span>
-              <span>{{ mention.line_number ? tf("explorer.lineNumber", { line: mention.line_number }) : t("explorer.lineUnknown") }}</span>
-              <span>{{ formatEntryType(mention.entry_type) }}</span>
+              <span>{{ mention.line_number ? `行号 ${mention.line_number}` : '行号未知' }}</span>
+              <span>{{ mention.entry_type || 'unknown' }}</span>
             </div>
             <p>{{ mention.clause_text }}</p>
           </article>
@@ -1893,32 +1384,20 @@ watch(
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">{{ t("explorer.textPreviewKicker") }}</p>
-            <h2>{{ t("explorer.textPreviewTitle") }}</h2>
+            <p class="panel-kicker">Text Preview</p>
+            <h2>条文检索结果</h2>
           </div>
         </div>
 
         <div class="result-list">
-          <button
-            v-for="entry in clauseResults"
-            :key="entry.clause_id"
-            type="button"
-            class="result-item text-preview-item"
-            :class="{ active: selectedClauseDetail?.clause.clause_id === entry.clause_id }"
-            @click="openClauseRecord(entry)"
-          >
+          <div v-for="entry in corpusResults" :key="entry.id" class="result-item">
             <div class="result-meta">
-              <span>{{ entry.record_id }}</span>
-              <span>{{ entry.entry_type ? formatEntryType(entry.entry_type) : t("common.unknown") }}</span>
-              <span>{{ tf("explorer.focus.evidence", { count: entry.mention_count }) }}</span>
+              <span>条文 #{{ entry.id }}</span>
+              <span v-if="entry.formula_name">{{ entry.formula_name }}</span>
             </div>
             <p>{{ entry.text }}</p>
-          </button>
+          </div>
         </div>
-        <StatePanel v-if="selectedClauseDetail" tone="info">
-          <p>{{ selectedClauseDetail.clause.record_id }} · {{ selectedClauseDetail.clause.clause_id }}</p>
-          <p>{{ tf("explorer.focus.evidence", { count: selectedClauseDetail.stats.mention_count }) }}</p>
-        </StatePanel>
       </article>
     </section>
   </main>
