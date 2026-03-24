@@ -12,6 +12,7 @@ import type {
   GraphNeo4jSyncResponse,
   GraphNeo4jSyncStatus,
   GraphEntityDetail,
+  GraphEntityPathways,
   GraphEntitySearchResult,
   GraphRegistryStatus,
   ReviewedGraphRefreshResponse,
@@ -105,6 +106,14 @@ export async function fetchGraphEntityDetail(entityId: string, params?: { relati
       relation_limit: params?.relationLimit ?? 12,
       evidence_limit: params?.evidenceLimit ?? 12,
     },
+  });
+  return response.data;
+}
+
+export async function fetchGraphEntityPathways(entityId: string, limit = 20) {
+  const encodedEntityId = encodeURIComponent(entityId);
+  const response = await apiClient.get<GraphEntityPathways>(`/graph/entities/${encodedEntityId}/pathways/`, {
+    params: { limit },
   });
   return response.data;
 }

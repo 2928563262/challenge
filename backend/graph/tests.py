@@ -75,6 +75,29 @@ class GraphApiTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_graph_entity_pathways_returns_candidate_paths(self):
+        search_response = self.client.get(
+            "/api/v1/graph/entities/",
+            {"keyword": "桂枝", "entity_type": "FORMULA", "limit": 1},
+        )
+        entity_id = search_response.json()["results"][0]["entity_id"]
+
+        response = self.client.get(f"/api/v1/graph/entities/{quote(entity_id, safe='')}/pathways/", {"limit": 10})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["entity"]["entity_id"], entity_id)
+        self.assertIn("paths", payload)
+        self.assertLessEqual(len(payload["paths"]), 10)
+        if payload["paths"]:
+            self.assertIn("path_type", payload["paths"][0])
+            self.assertIn("nodes", payload["paths"][0])
+
+    def test_graph_entity_pathways_rejects_non_integer_limit(self):
+        response = self.client.get("/api/v1/graph/entities/UNKNOWN%7CENTITY/pathways/", {"limit": "abc"})
+
+        self.assertEqual(response.status_code, 400)
+
     def test_graph_registry_endpoint_returns_active_version(self):
         record = register_graph_export(
             {

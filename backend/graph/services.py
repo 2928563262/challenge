@@ -342,6 +342,40 @@ def _relation_payload(relation: dict[str, Any], related_entity: dict[str, Any], 
     }
 
 
+def _entity_brief(entity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "entity_id": entity["entity_id"],
+        "entity_type": entity["entity_type"],
+        "name": entity["name"],
+    }
+
+
+def _outgoing_relations_by_type(data: dict[str, Any], entity_id: str, relation_type: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for relation in data["outgoing_relations"].get(entity_id, []):
+        if relation["relation_type"] != relation_type:
+            continue
+        related = data["entities"].get(relation["end_id"])
+        if related is None:
+            continue
+        rows.append((relation, related))
+    rows.sort(key=lambda item: (-item[0]["evidence_count"], item[1]["name"], item[1]["entity_id"]))
+    return rows
+
+
+def _incoming_relations_by_type(data: dict[str, Any], entity_id: str, relation_type: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for relation in data["incoming_relations"].get(entity_id, []):
+        if relation["relation_type"] != relation_type:
+            continue
+        related = data["entities"].get(relation["start_id"])
+        if related is None:
+            continue
+        rows.append((relation, related))
+    rows.sort(key=lambda item: (-item[0]["evidence_count"], item[1]["name"], item[1]["entity_id"]))
+    return rows
+
+
 def get_entity_detail(entity_id: str, relation_limit: int = 20, evidence_limit: int = 20) -> dict[str, Any]:
     data = load_graph_data()
     entity = data["entities"].get(entity_id)
@@ -377,6 +411,124 @@ def get_entity_detail(entity_id: str, relation_limit: int = 20, evidence_limit: 
             "incoming_relation_count": len(data["incoming_relations"].get(entity_id, [])),
             "mention_count": len(data["mentions_by_entity"].get(entity_id, [])),
         },
+    }
+
+
+def build_entity_pathways(entity_id: str, limit: int = 20) -> dict[str, Any]:
+    data = load_graph_data()
+    entity = data["entities"].get(entity_id)
+    if entity is None:
+        raise KeyError(entity_id)
+
+    safe_limit = max(1, min(limit, 100))
+    focus_type = entity["entity_type"]
+    focus_id = entity["entity_id"]
+
+    pair_map: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def add_pair(syndrome_id: str, formula_id: str, relation: dict[str, Any]) -> None:
+        key = (syndrome_id, formula_id)
+        existing = pair_map.get(key)
+        if existing is None or relation["evidence_count"] > existing["relation"]["evidence_count"]:
+            pair_map[key] = {"relation": relation}
+
+    if focus_type == "SYNDROME":
+        for relation, formula in _outgoing_relations_by_type(data, focus_id, "SYNDROME_TO_FORMULA"):
+            add_pair(focus_id, formula["entity_id"], relation)
+    elif focus_type == "FORMULA":
+        for relation, syndrome in _incoming_relations_by_type(data, focus_id, "SYNDROME_TO_FORMULA"):
+            add_pair(syndrome["entity_id"], focus_id, relation)
+    elif focus_type == "SYMPTOM":
+        for _, syndrome in _incoming_relations_by_type(data, focus_id, "SYNDROME_HAS_SYMPTOM"):
+            for relation, formula in _outgoing_relations_by_type(data, syndrome["entity_id"], "SYNDROME_TO_FORMULA"):
+                add_pair(syndrome["entity_id"], formula["entity_id"], relation)
+    elif focus_type == "HERB":
+        for _, formula in _incoming_relations_by_type(data, focus_id, "FORMULA_CONTAINS_HERB"):
+            for relation, syndrome in _incoming_relations_by_type(data, formula["entity_id"], "SYNDROME_TO_FORMULA"):
+                add_pair(syndrome["entity_id"], formula["entity_id"], relation)
+    elif focus_type == "ADMINISTRATION":
+        for _, formula in _incoming_relations_by_type(data, focus_id, "FORMULA_HAS_ADMINISTRATION"):
+            for relation, syndrome in _incoming_relations_by_type(data, formula["entity_id"], "SYNDROME_TO_FORMULA"):
+                add_pair(syndrome["entity_id"], formula["entity_id"], relation)
+
+    path_index: dict[str, dict[str, Any]] = {}
+
+    def add_path(path_type: str, nodes: list[dict[str, Any]], relations: list[dict[str, Any]]) -> None:
+        node_ids = [str(item["entity_id"]) for item in nodes]
+        relation_types = [str(item["relation_type"]) for item in relations]
+        dedupe_key = f"{path_type}|{'|'.join(node_ids)}|{'|'.join(relation_types)}"
+        if dedupe_key in path_index:
+            return
+        evidence_score = int(sum(int(item["evidence_count"]) for item in relations))
+        path_index[dedupe_key] = {
+            "path_type": path_type,
+            "nodes": [_entity_brief(item) for item in nodes],
+            "relations": [
+                {
+                    "relation_type": item["relation_type"],
+                    "start_entity_id": item["start_id"],
+                    "end_entity_id": item["end_id"],
+                    "evidence_count": int(item["evidence_count"]),
+                }
+                for item in relations
+            ],
+            "evidence_score": evidence_score,
+            "chain_text": " -> ".join(str(item["name"]) for item in nodes),
+        }
+
+    for (syndrome_id, formula_id), pair_payload in pair_map.items():
+        syndrome = data["entities"].get(syndrome_id)
+        formula = data["entities"].get(formula_id)
+        relation = pair_payload["relation"]
+        if syndrome is None or formula is None:
+            continue
+
+        add_path("SYNDROME_TO_FORMULA", [syndrome, formula], [relation])
+
+        symptoms = _outgoing_relations_by_type(data, syndrome_id, "SYNDROME_HAS_SYMPTOM")
+        for symptom_relation, symptom in symptoms[:3]:
+            add_path(
+                "SYMPTOM_SYNDROME_FORMULA",
+                [symptom, syndrome, formula],
+                [symptom_relation, relation],
+            )
+
+        herbs = _outgoing_relations_by_type(data, formula_id, "FORMULA_CONTAINS_HERB")
+        for herb_relation, herb in herbs[:4]:
+            add_path(
+                "SYNDROME_FORMULA_HERB",
+                [syndrome, formula, herb],
+                [relation, herb_relation],
+            )
+
+        administrations = _outgoing_relations_by_type(data, formula_id, "FORMULA_HAS_ADMINISTRATION")
+        for administration_relation, administration in administrations[:2]:
+            add_path(
+                "SYNDROME_FORMULA_ADMINISTRATION",
+                [syndrome, formula, administration],
+                [relation, administration_relation],
+            )
+
+    if focus_type == "FORMULA":
+        formula = entity
+        for herb_relation, herb in _outgoing_relations_by_type(data, focus_id, "FORMULA_CONTAINS_HERB")[:6]:
+            add_path("FORMULA_HERB", [formula, herb], [herb_relation])
+        for administration_relation, administration in _outgoing_relations_by_type(data, focus_id, "FORMULA_HAS_ADMINISTRATION")[:3]:
+            add_path("FORMULA_ADMINISTRATION", [formula, administration], [administration_relation])
+    elif focus_type == "SYNDROME":
+        syndrome = entity
+        for symptom_relation, symptom in _outgoing_relations_by_type(data, focus_id, "SYNDROME_HAS_SYMPTOM")[:6]:
+            add_path("SYNDROME_SYMPTOM", [syndrome, symptom], [symptom_relation])
+
+    paths = sorted(
+        path_index.values(),
+        key=lambda item: (-item["evidence_score"], len(item["nodes"]), item["chain_text"]),
+    )
+
+    return {
+        "entity": _entity_brief(entity),
+        "total": len(paths),
+        "paths": paths[:safe_limit],
     }
 
 

@@ -100,6 +100,33 @@ export interface GraphEntityDetail {
   };
 }
 
+export interface GraphPathwayRelation {
+  relation_type: string;
+  start_entity_id: string;
+  end_entity_id: string;
+  evidence_count: number;
+}
+
+export interface GraphPathwayNode {
+  entity_id: string;
+  entity_type: string;
+  name: string;
+}
+
+export interface GraphPathway {
+  path_type: string;
+  nodes: GraphPathwayNode[];
+  relations: GraphPathwayRelation[];
+  evidence_score: number;
+  chain_text: string;
+}
+
+export interface GraphEntityPathways {
+  entity: Pick<GraphEntity, "entity_id" | "entity_type" | "name">;
+  total: number;
+  paths: GraphPathway[];
+}
+
 export interface GraphShowcaseCase {
   slug: string;
   title: string;

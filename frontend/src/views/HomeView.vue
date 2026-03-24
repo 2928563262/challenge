@@ -49,7 +49,6 @@ const heroStats = computed(() => {
   if (!graphSummary.value) {
     return [];
   }
-
   return [
     { label: "清洗后条文", value: graphSummary.value.input_record_count.toLocaleString("zh-CN") },
     { label: "知识节点", value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
@@ -65,7 +64,9 @@ const systemStatusCards = computed(() => {
 
   const activeNer = modelSummary.value.registry.active.ner;
   const activeRelation = modelSummary.value.registry.active.relation;
-  const acceptedCount = Number((modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, any> | null)?.stats?.record_count ?? 0);
+  const acceptedReportData = modelSummary.value.accepted_pipeline.accepted_report.data as Record<string, unknown> | null;
+  const acceptedStats = (acceptedReportData?.stats ?? null) as Record<string, unknown> | null;
+  const acceptedCount = Number(acceptedStats?.record_count ?? 0);
 
   return [
     {
@@ -96,7 +97,6 @@ const graphSyncCard = computed(() => {
   if (!report) {
     return null;
   }
-
   const summary = report.summary ?? {};
   return {
     label: report.ok ? "最近一次 Neo4j 同步" : "Neo4j 同步失败",
@@ -109,7 +109,6 @@ const graphSyncCard = computed(() => {
   };
 });
 
-const typeBreakdown = computed(() => Object.entries(graphSummary.value?.entity_type_breakdown ?? {}));
 const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
 
@@ -142,7 +141,6 @@ function formatModelMetric(record: ModelSummary["registry"]["active"]["ner"] | M
     const f1 = record.validation_metrics.eval_f1 ?? record.validation_metrics.f1;
     return typeof f1 === "number" ? `验证 F1 ${f1.toFixed(4)}` : "验证指标未记录";
   }
-
   const macroF1 = record.validation_metrics.eval_macro_f1 ?? record.validation_metrics.macro_f1;
   return typeof macroF1 === "number" ? `验证 Macro-F1 ${macroF1.toFixed(4)}` : "验证指标未记录";
 }
@@ -181,7 +179,7 @@ async function loadOverview() {
   try {
     overview.value = await fetchOverview();
   } catch {
-    overviewError.value = "文本概览加载失败，请确认后端服务已经启动。";
+    overviewError.value = "文本概览加载失败，请确认后端服务已启动。";
   } finally {
     loadingOverview.value = false;
   }
@@ -348,82 +346,46 @@ onMounted(async () => {
       </StatePanel>
     </section>
 
-    <section class="panel showcase-panel">
-      <div class="panel-header compact-header">
-        <div>
-          <p class="panel-kicker">典型案例</p>
-          <h2>典型案例入口</h2>
-        </div>
-        <RouterLink to="/explore" class="ghost-link">查看图谱细节</RouterLink>
-      </div>
-
-      <StatePanel v-if="showcaseError" tone="error">
-        <p>{{ showcaseError }}</p>
-      </StatePanel>
-      <StatePanel v-else-if="loadingShowcase" tone="info">
-        <p>正在加载典型案例...</p>
-      </StatePanel>
-      <div v-else class="showcase-grid">
-        <button
-          v-for="caseItem in showcaseCases"
-          :key="caseItem.slug"
-          type="button"
-          class="showcase-case-card"
-          @click="openCase(caseItem)"
-        >
-          <div class="showcase-case-head">
-            <div>
-              <p class="entity-type-tag">{{ caseItem.focus }}</p>
-              <h3>{{ caseItem.title }}</h3>
-            </div>
-            <span>{{ caseItem.entity.name }}</span>
-          </div>
-          <p>{{ caseItem.description }}</p>
-          <div class="case-highlight-list">
-            <div v-for="highlight in caseItem.highlights" :key="highlight" class="case-highlight-item">
-              {{ highlight }}
-            </div>
-          </div>
-        </button>
-      </div>
-    </section>
-
     <section class="content-grid dashboard-grid">
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">图谱快照</p>
-            <h2>实体类型分布</h2>
+            <p class="panel-kicker">典型案例</p>
+            <h2>答辩演示入口</h2>
           </div>
+          <RouterLink to="/explore" class="ghost-link">查看图谱细节</RouterLink>
         </div>
 
-        <StatePanel v-if="graphError" tone="error">
-          <p>{{ graphError }}</p>
+        <StatePanel v-if="showcaseError" tone="error">
+          <p>{{ showcaseError }}</p>
         </StatePanel>
-        <div v-else class="breakdown-list">
-          <div v-for="([type, count]) in typeBreakdown" :key="type" class="breakdown-item">
-            <span>{{ formatEntityType(type) }}</span>
-            <strong>{{ count }}</strong>
-          </div>
+        <StatePanel v-else-if="loadingShowcase" tone="info">
+          <p>正在加载典型案例...</p>
+        </StatePanel>
+        <div v-else class="showcase-grid">
+          <button v-for="caseItem in showcaseCases" :key="caseItem.slug" type="button" class="showcase-case-card" @click="openCase(caseItem)">
+            <div class="showcase-case-head">
+              <div>
+                <p class="entity-type-tag">{{ caseItem.focus }}</p>
+                <h3>{{ caseItem.title }}</h3>
+              </div>
+              <span>{{ caseItem.entity.name }}</span>
+            </div>
+            <p>{{ caseItem.description }}</p>
+          </button>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">核心节点</p>
-            <h2>高频知识节点</h2>
+            <p class="panel-kicker">高频节点</p>
+            <h2>图谱核心实体</h2>
           </div>
         </div>
 
         <div class="top-entity-grid">
-          <button
-            v-for="entity in topEntities"
-            :key="entity.entity_id"
-            class="top-entity-card"
-            type="button"
-            @click="openExplorer(entity)"
-          >
+          <button v-for="entity in topEntities" :key="entity.entity_id" class="top-entity-card" type="button" @click="openExplorer(entity)">
             <span>{{ formatEntityType(entity.entity_type) }}</span>
             <strong>{{ entity.name }}</strong>
             <p>提及 {{ entity.mention_count }} 次</p>
@@ -437,7 +399,7 @@ onMounted(async () => {
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">文本样本</p>
-            <h2>方剂相关条文样本</h2>
+            <h2>方剂相关条文</h2>
           </div>
         </div>
 
@@ -458,30 +420,25 @@ onMounted(async () => {
         </div>
       </article>
 
-      <article class="panel narrative-panel">
+      <article class="panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">系统能力</p>
-            <h2>当前系统支持的核心流程</h2>
+            <p class="panel-kicker">下一步</p>
+            <h2>系统操作建议</h2>
           </div>
         </div>
-
         <div class="narrative-list">
           <div class="narrative-item">
-            <strong>图谱检索</strong>
-            <p>支持按方剂、证候、症状和中药等入口快速定位实体，并查看关联关系与原文证据。</p>
+            <strong>1. 候选复核</strong>
+            <p>先在“候选复核”页补充并采纳记录，确保增量数据质量。</p>
           </div>
           <div class="narrative-item">
-            <strong>模型辅助抽取</strong>
-            <p>支持条文实体识别、关系辅助判断和临时会话图构建，便于快速检查抽取结果。</p>
+            <strong>2. 模型回流</strong>
+            <p>在“模型工作台”刷新已采纳回流，然后启动新一轮 NER/RE 训练任务。</p>
           </div>
           <div class="narrative-item">
-            <strong>候选复核</strong>
-            <p>支持提交候选记录、人工修正实体与关系，并沉淀为后续训练和建图的高质量样本。</p>
-          </div>
-          <div class="narrative-item">
-            <strong>模型与图谱回流</strong>
-            <p>支持已采纳记录自动回流训练集、复核图谱刷新，以及同步到 Neo4j 进行查询展示。</p>
+            <strong>3. 图谱同步</strong>
+            <p>完成复核图谱刷新后，把当前图谱同步到 Neo4j，用于检索展示与答辩演示。</p>
           </div>
         </div>
       </article>

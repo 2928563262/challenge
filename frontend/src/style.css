@@ -94,6 +94,11 @@ button {
   max-width: none;
 }
 
+.home-dashboard .hero-copy h1 {
+  font-size: clamp(2rem, 3.4vw, 3rem);
+  white-space: nowrap;
+}
+
 .hero-description,
 .status-text,
 .result-item p,
@@ -386,6 +391,25 @@ button {
   background: rgba(250, 245, 236, 0.92);
 }
 
+.pathway-title {
+  margin-top: 16px;
+}
+
+.pathway-item strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.pathway-item p {
+  margin: 0;
+}
+
+.pathway-item small {
+  display: block;
+  margin-top: 6px;
+  color: #8c5e34;
+}
+
 .relation-item span {
   display: block;
   font-size: 0.74rem;
@@ -518,6 +542,10 @@ button {
   .hero-copy h1 {
     max-width: none;
     font-size: clamp(2rem, 10vw, 3.2rem);
+  }
+
+  .home-dashboard .hero-copy h1 {
+    white-space: normal;
   }
 
   .search-row,

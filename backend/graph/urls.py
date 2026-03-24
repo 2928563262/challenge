@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     GraphEntityDetailView,
+    GraphEntityPathwaysView,
     GraphEntitySearchView,
     GraphNeo4jSyncView,
     GraphRegistryActivationView,
@@ -19,5 +20,6 @@ urlpatterns = [
     path("datasets/reviewed/refresh/", ReviewedGraphRefreshView.as_view(), name="reviewed-graph-refresh"),
     path("showcase/", GraphShowcaseView.as_view(), name="graph-showcase"),
     path("entities/", GraphEntitySearchView.as_view(), name="graph-entity-search"),
+    path("entities/<path:entity_id>/pathways/", GraphEntityPathwaysView.as_view(), name="graph-entity-pathways"),
     path("entities/<path:entity_id>/", GraphEntityDetailView.as_view(), name="graph-entity-detail"),
 ]

@@ -6,6 +6,7 @@ from .services import (
     activate_graph_version,
     GraphDataUnavailableError,
     GraphSyncError,
+    build_entity_pathways,
     build_graph_showcase,
     build_graph_summary,
     get_graph_registry_status,
@@ -127,6 +128,23 @@ class GraphEntityDetailView(APIView):
                 relation_limit=parsed_relation_limit,
                 evidence_limit=parsed_evidence_limit,
             )
+        except KeyError:
+            return Response({"detail": "entity not found."}, status=status.HTTP_404_NOT_FOUND)
+        except GraphDataUnavailableError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(payload)
+
+
+class GraphEntityPathwaysView(APIView):
+    def get(self, request, entity_id: str):
+        limit = request.query_params.get("limit") or "20"
+        try:
+            parsed_limit = int(limit)
+        except ValueError:
+            return Response({"detail": "limit query parameter must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payload = build_entity_pathways(entity_id=entity_id, limit=parsed_limit)
         except KeyError:
             return Response({"detail": "entity not found."}, status=status.HTTP_404_NOT_FOUND)
         except GraphDataUnavailableError as exc:

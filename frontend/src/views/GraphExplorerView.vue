@@ -8,6 +8,7 @@ import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
   fetchGraphEntityDetail,
+  fetchGraphEntityPathways,
   fetchGraphShowcase,
   fetchGraphSummary,
   predictNer,
@@ -20,6 +21,7 @@ import type {
   CorpusEntry,
   GraphEntity,
   GraphEntityDetail,
+  GraphEntityPathways,
   GraphRelation,
   GraphShowcaseCase,
   GraphSummary,
@@ -52,6 +54,7 @@ const { t } = useI18n();
 const graphSummary = ref<GraphSummary | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
 const selectedEntityDetail = ref<GraphEntityDetail | null>(null);
+const entityPathways = ref<GraphEntityPathways | null>(null);
 const nerPrediction = ref<NerPrediction | null>(null);
 const predictedGraphMatches = ref<Record<string, GraphEntity[]>>({});
 const relationPrediction = ref<RelationPrediction | null>(null);
@@ -64,11 +67,13 @@ const loadingGraphSummary = ref(false);
 const loadingShowcase = ref(false);
 const searching = ref(false);
 const loadingEntityDetail = ref(false);
+const loadingEntityPathways = ref(false);
 const predictingNer = ref(false);
 const resolvingPredictedEntities = ref(false);
 const relationPredicting = ref(false);
 
 const graphError = ref("");
+const pathwayError = ref("");
 const searchError = ref("");
 const showcaseError = ref("");
 const nerError = ref("");
@@ -133,6 +138,16 @@ const entityTypeLabels: Record<string, string> = {
   HERB: "中药",
   THERAPY: "治法",
   ADMINISTRATION: "服法",
+};
+
+const pathwayTypeLabels: Record<string, string> = {
+  SYNDROME_TO_FORMULA: "证候 -> 方剂",
+  SYMPTOM_SYNDROME_FORMULA: "症状 -> 证候 -> 方剂",
+  SYNDROME_FORMULA_HERB: "证候 -> 方剂 -> 中药",
+  SYNDROME_FORMULA_ADMINISTRATION: "证候 -> 方剂 -> 服法",
+  FORMULA_HERB: "方剂 -> 中药",
+  FORMULA_ADMINISTRATION: "方剂 -> 服法",
+  SYNDROME_SYMPTOM: "证候 -> 症状",
 };
 
 const quickStats = computed(() => {
@@ -354,6 +369,10 @@ function formatEntryType(entryType: string | null) {
     return "辨证条";
   }
   return entryType;
+}
+
+function formatPathwayType(pathType: string) {
+  return pathwayTypeLabels[pathType] || pathType;
 }
 
 function predictedEntityKey(entity: NerPredictionEntity) {
@@ -664,6 +683,19 @@ async function loadShowcase() {
   }
 }
 
+async function loadEntityPathways(entityId: string) {
+  loadingEntityPathways.value = true;
+  pathwayError.value = "";
+  try {
+    entityPathways.value = await fetchGraphEntityPathways(entityId, 12);
+  } catch {
+    entityPathways.value = null;
+    pathwayError.value = "诊疗链路生成失败，请稍后重试。";
+  } finally {
+    loadingEntityPathways.value = false;
+  }
+}
+
 async function loadEntityDetail(entityId: string, updateRoute = true) {
   loadingEntityDetail.value = true;
   graphError.value = "";
@@ -675,8 +707,11 @@ async function loadEntityDetail(entityId: string, updateRoute = true) {
     if (updateRoute) {
       await router.replace({ query: { ...route.query, entityId } });
     }
+    await loadEntityPathways(entityId);
   } catch {
     graphError.value = "实体详情加载失败，请稍后重试。";
+    entityPathways.value = null;
+    pathwayError.value = "";
   } finally {
     loadingEntityDetail.value = false;
   }
@@ -723,6 +758,8 @@ async function runSearch(updateRoute = true) {
       await loadEntityDetail(targetEntityId, false);
     } else {
       selectedEntityDetail.value = null;
+      entityPathways.value = null;
+      pathwayError.value = "";
     }
   } catch {
     searchError.value = "检索失败，请检查后端服务、图谱接口或跨域配置。";
@@ -1432,6 +1469,20 @@ watch(
               <p class="column-title">典型链路</p>
               <div class="chain-list">
                 <div v-for="item in chainSummary" :key="item" class="chain-item">{{ item }}</div>
+              </div>
+
+              <p class="column-title pathway-title">可用诊疗路径</p>
+              <div class="chain-list">
+                <div v-if="loadingEntityPathways" class="chain-item">正在生成路径...</div>
+                <div v-else-if="pathwayError" class="chain-item">{{ pathwayError }}</div>
+                <template v-else-if="entityPathways?.paths.length">
+                  <div v-for="pathway in entityPathways.paths.slice(0, 6)" :key="`${pathway.path_type}-${pathway.chain_text}`" class="chain-item pathway-item">
+                    <strong>{{ formatPathwayType(pathway.path_type) }}</strong>
+                    <p>{{ pathway.chain_text }}</p>
+                    <small>证据强度 {{ pathway.evidence_score }}</small>
+                  </div>
+                </template>
+                <div v-else class="chain-item">当前实体暂无稳定诊疗路径。</div>
               </div>
             </div>
 
