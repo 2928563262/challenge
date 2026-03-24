@@ -10,6 +10,8 @@ import type {
   AnnotationCandidateUpdatePayload,
   CorpusOverview,
   CorpusSearchResult,
+  ClinicalPath,
+  FormulaAnalysis,
   GraphClauseDetail,
   GraphClauseSearchResponse,
   GraphActivationResponse,
@@ -21,6 +23,7 @@ import type {
   GraphEntityPathways,
   GraphEntitySearchResult,
   GraphRegistryStatus,
+  HerbAnalysis,
   ReviewedGraphRefreshResponse,
   GraphShowcaseResponse,
   GraphSummary,
@@ -34,6 +37,8 @@ import type {
   NerPrediction,
   QAAnswer,
   RelationPrediction,
+  StatsOverview,
+  TextAnalysis,
   AcceptedPipelineRefreshResponse,
   SystemPipelineRunResponse,
   TrainingJobsStatus,
@@ -73,6 +78,36 @@ export async function searchCorpus(params: {
 
 export async function fetchGraphSummary() {
   const response = await apiClient.get<GraphSummary>("/graph/summary/");
+  return response.data;
+}
+
+// ============ Statistics API ============
+export async function fetchStatsOverview() {
+  const response = await apiClient.get<StatsOverview>("/stats/overview/");
+  return response.data;
+}
+
+export async function fetchHerbAnalysis(limit?: number) {
+  const response = await apiClient.get<HerbAnalysis>("/stats/herbs/", {
+    params: { limit: limit || 20 },
+  });
+  return response.data;
+}
+
+export async function fetchFormulaAnalysis(limit?: number) {
+  const response = await apiClient.get<FormulaAnalysis>("/stats/formulas/", {
+    params: { limit: limit || 20 },
+  });
+  return response.data;
+}
+
+export async function fetchClinicalPath() {
+  const response = await apiClient.get<ClinicalPath>("/stats/clinical-path/");
+  return response.data;
+}
+
+export async function fetchTextAnalysis() {
+  const response = await apiClient.get<TextAnalysis>("/stats/text/");
   return response.data;
 }
 
