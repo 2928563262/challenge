@@ -27,6 +27,14 @@ ENTITY_RELATION_TYPES = {
     "FORMULA_HAS_ADMINISTRATION",
 }
 
+MANUAL_SUPPORTED_RELATION_TYPES = {
+    "SYNDROME_HAS_SYMPTOM",
+    "SYNDROME_TO_FORMULA",
+    "SYNDROME_TO_THERAPY",
+    "FORMULA_CONTAINS_HERB",
+    "FORMULA_HAS_ADMINISTRATION",
+}
+
 ENTITY_LABELS = {
     "SYNDROME": "Syndrome",
     "SYMPTOM": "Symptom",
@@ -110,6 +118,34 @@ def merge_clause_mentions(tx, rows: list[dict[str, str]]) -> None:
     )
 
 
+def suppress_entity_relations(tx, relation_type: str, rows: list[dict[str, object]]) -> int:
+    query = f"""
+        UNWIND $rows AS row
+        MATCH (source:Entity {{entity_id: row.start_id}})-[r:{relation_type}]->(target:Entity {{entity_id: row.end_id}})
+        DELETE r
+        RETURN count(r) AS affected
+    """
+    result = tx.run(query, rows=rows).single()
+    return int((result or {}).get("affected") or 0)
+
+
+def upsert_entity_relations(tx, relation_type: str, rows: list[dict[str, object]]) -> int:
+    query = f"""
+        UNWIND $rows AS row
+        MATCH (source:Entity {{entity_id: row.start_id}})
+        MATCH (target:Entity {{entity_id: row.end_id}})
+        MERGE (source)-[r:{relation_type}]->(target)
+        SET r.evidence_count = row.evidence_count,
+            r.record_ids = row.record_ids,
+            r.example_text = row.example_text,
+            r.manual_override = true,
+            r.manual_override_id = row.manual_override_id
+        RETURN count(r) AS affected
+    """
+    result = tx.run(query, rows=rows).single()
+    return int((result or {}).get("affected") or 0)
+
+
 def ensure_constraints(driver, database: str) -> None:
     statements = [
         "CREATE CONSTRAINT entity_id_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.entity_id IS UNIQUE",
@@ -120,7 +156,83 @@ def ensure_constraints(driver, database: str) -> None:
             session.run(statement)
 
 
-def import_graph(graph_dir: Path, uri: str, username: str, password: str, database: str, batch_size: int) -> dict[str, int]:
+def _normalize_manual_overrides(manual_overrides: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    if not manual_overrides:
+        return []
+    normalized: list[dict[str, object]] = []
+    for item in manual_overrides:
+        action = str(item.get("action") or "").strip().lower()
+        relation_type = str(item.get("relation_type") or "").strip().upper()
+        start_id = str(item.get("start_id") or "").strip()
+        end_id = str(item.get("end_id") or "").strip()
+        if action not in {"upsert", "suppress"}:
+            continue
+        if relation_type not in MANUAL_SUPPORTED_RELATION_TYPES:
+            continue
+        if not start_id or not end_id:
+            continue
+        normalized.append(
+            {
+                "id": str(item.get("id") or ""),
+                "action": action,
+                "relation_type": relation_type,
+                "start_id": start_id,
+                "end_id": end_id,
+                "evidence_count": max(1, int(item.get("evidence_count") or 1)),
+                "record_ids": [str(value) for value in item.get("record_ids", []) if str(value).strip()],
+                "example_text": str(item.get("example_text") or ""),
+            }
+        )
+    return normalized
+
+
+def _apply_manual_overrides(session, manual_overrides: list[dict[str, object]], batch_size: int) -> dict[str, int]:
+    if not manual_overrides:
+        return {"manual_overrides": 0, "manual_relations_upserted": 0, "manual_relations_suppressed": 0}
+
+    upsert_by_type: dict[str, list[dict[str, object]]] = {}
+    suppress_by_type: dict[str, list[dict[str, object]]] = {}
+    for item in manual_overrides:
+        relation_type = str(item["relation_type"])
+        row = {
+            "start_id": str(item["start_id"]),
+            "end_id": str(item["end_id"]),
+            "evidence_count": int(item["evidence_count"]),
+            "record_ids": item["record_ids"],
+            "example_text": str(item["example_text"]),
+            "manual_override_id": str(item.get("id") or ""),
+        }
+        if str(item["action"]) == "suppress":
+            suppress_by_type.setdefault(relation_type, []).append(row)
+        else:
+            upsert_by_type.setdefault(relation_type, []).append(row)
+
+    suppressed = 0
+    for relation_type, rows in suppress_by_type.items():
+        for batch in chunked(rows, batch_size):
+            suppressed += session.execute_write(suppress_entity_relations, relation_type, batch)
+
+    upserted = 0
+    for relation_type, rows in upsert_by_type.items():
+        for batch in chunked(rows, batch_size):
+            upserted += session.execute_write(upsert_entity_relations, relation_type, batch)
+
+    return {
+        "manual_overrides": len(manual_overrides),
+        "manual_relations_upserted": upserted,
+        "manual_relations_suppressed": suppressed,
+    }
+
+
+def import_graph(
+    graph_dir: Path,
+    uri: str,
+    username: str,
+    password: str,
+    database: str,
+    batch_size: int,
+    manual_overrides: list[dict[str, object]] | None = None,
+) -> dict[str, int]:
     if GraphDatabase is None:
         raise RuntimeError(f"neo4j package is not installed: {IMPORT_ERROR}")
 
@@ -172,9 +284,11 @@ def import_graph(graph_dir: Path, uri: str, username: str, password: str, databa
         }
         for row in load_rows(graph_dir / "clause_mentions.csv")
     ]
+    normalized_manual_overrides = _normalize_manual_overrides(manual_overrides)
 
     driver = GraphDatabase.driver(uri, auth=(username, password))
     ensure_constraints(driver, database)
+    manual_summary = {"manual_overrides": 0, "manual_relations_upserted": 0, "manual_relations_suppressed": 0}
 
     with driver.session(database=database) as session:
         for batch in chunked(entity_rows, batch_size):
@@ -186,6 +300,7 @@ def import_graph(graph_dir: Path, uri: str, username: str, password: str, databa
                 session.execute_write(merge_entity_relations, relation_type, batch)
         for batch in chunked(clause_mention_rows, batch_size):
             session.execute_write(merge_clause_mentions, batch)
+        manual_summary = _apply_manual_overrides(session, normalized_manual_overrides, batch_size)
 
     driver.close()
     return {
@@ -193,6 +308,7 @@ def import_graph(graph_dir: Path, uri: str, username: str, password: str, databa
         "clause_nodes": len(clause_rows),
         "entity_relations": sum(len(rows) for rows in relation_rows_by_type.values()),
         "clause_mentions": len(clause_mention_rows),
+        **manual_summary,
     }
 
 

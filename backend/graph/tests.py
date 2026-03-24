@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 from urllib.parse import quote
 from unittest.mock import patch
@@ -7,6 +8,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .registry import register_graph_export
+from .services import load_graph_data, run_neo4j_sync
 
 
 class GraphApiTests(TestCase):
@@ -14,13 +16,22 @@ class GraphApiTests(TestCase):
 
     def setUp(self):
         super().setUp()
+        load_graph_data.cache_clear()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.registry_path = os.path.join(self.temp_dir.name, "graph_registry.json")
-        self.registry_patch = patch.dict(os.environ, {"GRAPH_REGISTRY_PATH": self.registry_path})
+        self.manual_relations_path = os.path.join(self.temp_dir.name, "manual_relation_overrides.json")
+        self.registry_patch = patch.dict(
+            os.environ,
+            {
+                "GRAPH_REGISTRY_PATH": self.registry_path,
+                "GRAPH_MANUAL_RELATIONS_PATH": self.manual_relations_path,
+            },
+        )
         self.registry_patch.start()
 
     def tearDown(self):
         self.registry_patch.stop()
+        load_graph_data.cache_clear()
         self.temp_dir.cleanup()
         super().tearDown()
 
@@ -212,3 +223,234 @@ class GraphApiTests(TestCase):
         payload = response.json()
         self.assertTrue(payload["sync"]["ok"])
         sync_mock.assert_called_once_with()
+
+    def test_manual_relation_upsert_endpoint_creates_override(self):
+        syndrome_response = self.client.get("/api/v1/graph/entities/", {"keyword": "太阳病", "entity_type": "SYNDROME", "limit": 1})
+        formula_response = self.client.get("/api/v1/graph/entities/", {"keyword": "桂枝汤", "entity_type": "FORMULA", "limit": 1})
+        syndrome_id = syndrome_response.json()["results"][0]["entity_id"]
+        formula_id = formula_response.json()["results"][0]["entity_id"]
+
+        response = self.client.post(
+            "/api/v1/graph/manual-relations/",
+            {
+                "action": "upsert",
+                "start_id": syndrome_id,
+                "end_id": formula_id,
+                "relation_type": "SYNDROME_TO_FORMULA",
+                "example_text": "人工补充关系",
+                "evidence_count": 2,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["record"]["action"], "upsert")
+        list_response = self.client.get("/api/v1/graph/manual-relations/")
+        self.assertEqual(list_response.status_code, 200)
+        self.assertGreaterEqual(list_response.json()["total"], 1)
+
+    def test_manual_relation_suppress_hides_relation_from_detail(self):
+        syndrome_response = self.client.get("/api/v1/graph/entities/", {"keyword": "太阳病", "entity_type": "SYNDROME", "limit": 1})
+        formula_response = self.client.get("/api/v1/graph/entities/", {"keyword": "桂枝汤", "entity_type": "FORMULA", "limit": 1})
+        syndrome_id = syndrome_response.json()["results"][0]["entity_id"]
+        formula_id = formula_response.json()["results"][0]["entity_id"]
+
+        before = self.client.get(f"/api/v1/graph/entities/{quote(syndrome_id, safe='')}/").json()
+        has_relation_before = any(
+            item["relation_type"] == "SYNDROME_TO_FORMULA" and item["related_entity"]["entity_id"] == formula_id
+            for item in before["outgoing_relations"]
+        )
+        self.assertTrue(has_relation_before)
+
+        suppress_response = self.client.post(
+            "/api/v1/graph/manual-relations/",
+            {
+                "action": "suppress",
+                "start_id": syndrome_id,
+                "end_id": formula_id,
+                "relation_type": "SYNDROME_TO_FORMULA",
+            },
+            format="json",
+        )
+        self.assertEqual(suppress_response.status_code, 201)
+
+        after = self.client.get(f"/api/v1/graph/entities/{quote(syndrome_id, safe='')}/").json()
+        has_relation_after = any(
+            item["relation_type"] == "SYNDROME_TO_FORMULA" and item["related_entity"]["entity_id"] == formula_id
+            for item in after["outgoing_relations"]
+        )
+        self.assertFalse(has_relation_after)
+
+    def test_manual_relation_delete_endpoint(self):
+        syndrome_response = self.client.get("/api/v1/graph/entities/", {"keyword": "太阳病", "entity_type": "SYNDROME", "limit": 1})
+        formula_response = self.client.get("/api/v1/graph/entities/", {"keyword": "桂枝汤", "entity_type": "FORMULA", "limit": 1})
+        syndrome_id = syndrome_response.json()["results"][0]["entity_id"]
+        formula_id = formula_response.json()["results"][0]["entity_id"]
+
+        create_response = self.client.post(
+            "/api/v1/graph/manual-relations/",
+            {
+                "action": "upsert",
+                "start_id": syndrome_id,
+                "end_id": formula_id,
+                "relation_type": "SYNDROME_TO_FORMULA",
+            },
+            format="json",
+        )
+        override_id = create_response.json()["record"]["id"]
+
+        delete_response = self.client.delete(f"/api/v1/graph/manual-relations/{override_id}/")
+        self.assertEqual(delete_response.status_code, 200)
+
+    def test_run_neo4j_sync_passes_resolved_manual_overrides(self):
+        data = load_graph_data()
+        syndrome_id = next(item["entity_id"] for item in data["entities"].values() if item["entity_type"] == "SYNDROME")
+        formula_id = next(item["entity_id"] for item in data["entities"].values() if item["entity_type"] == "FORMULA")
+        symptom_id = next(item["entity_id"] for item in data["entities"].values() if item["entity_type"] == "SYMPTOM")
+
+        manual_payload = {
+            "records": [
+                {
+                    "id": "manual-old-upsert",
+                    "graph_id": "default-graph",
+                    "action": "upsert",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 2,
+                    "record_ids": [],
+                    "example_text": "old",
+                    "created_at": "2026-03-24T00:00:00+00:00",
+                    "updated_at": "2026-03-24T00:00:00+00:00",
+                },
+                {
+                    "id": "manual-new-suppress",
+                    "graph_id": "default-graph",
+                    "action": "suppress",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 1,
+                    "record_ids": [],
+                    "example_text": "suppress",
+                    "created_at": "2026-03-24T00:01:00+00:00",
+                    "updated_at": "2026-03-24T00:01:00+00:00",
+                },
+                {
+                    "id": "manual-symptom-upsert",
+                    "graph_id": "default-graph",
+                    "action": "upsert",
+                    "relation_type": "SYNDROME_HAS_SYMPTOM",
+                    "start_id": syndrome_id,
+                    "end_id": symptom_id,
+                    "evidence_count": 3,
+                    "record_ids": [],
+                    "example_text": "symptom",
+                    "created_at": "2026-03-24T00:02:00+00:00",
+                    "updated_at": "2026-03-24T00:02:00+00:00",
+                },
+                {
+                    "id": "manual-other-graph",
+                    "graph_id": "other-graph",
+                    "action": "upsert",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 4,
+                    "record_ids": [],
+                    "example_text": "other",
+                    "created_at": "2026-03-24T00:03:00+00:00",
+                    "updated_at": "2026-03-24T00:03:00+00:00",
+                },
+            ]
+        }
+        with open(self.manual_relations_path, "w", encoding="utf-8") as handle:
+            json.dump(manual_payload, handle, ensure_ascii=False, indent=2)
+
+        with (
+            patch("scripts.import_graph_to_neo4j.import_graph") as import_mock,
+            patch("graph.services._write_neo4j_sync_report"),
+        ):
+            import_mock.return_value = {
+                "entity_nodes": 1,
+                "clause_nodes": 1,
+                "entity_relations": 1,
+                "clause_mentions": 1,
+                "manual_overrides": 2,
+                "manual_relations_upserted": 1,
+                "manual_relations_suppressed": 1,
+            }
+            payload = run_neo4j_sync()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["summary"]["manual_overrides"], 2)
+        self.assertEqual(payload["summary"]["manual_relations_upserted"], 1)
+        self.assertEqual(payload["summary"]["manual_relations_suppressed"], 1)
+        import_mock.assert_called_once()
+        manual_overrides = import_mock.call_args.kwargs["manual_overrides"]
+        self.assertEqual(len(manual_overrides), 2)
+        override_map = {
+            (item["start_id"], item["end_id"], item["relation_type"]): item["action"]
+            for item in manual_overrides
+        }
+        self.assertEqual(override_map[(syndrome_id, formula_id, "SYNDROME_TO_FORMULA")], "suppress")
+        self.assertEqual(override_map[(syndrome_id, symptom_id, "SYNDROME_HAS_SYMPTOM")], "upsert")
+
+    def test_manual_relation_list_defaults_to_active_graph(self):
+        data = load_graph_data()
+        syndrome_id = next(item["entity_id"] for item in data["entities"].values() if item["entity_type"] == "SYNDROME")
+        formula_id = next(item["entity_id"] for item in data["entities"].values() if item["entity_type"] == "FORMULA")
+
+        manual_payload = {
+            "records": [
+                {
+                    "id": "manual-active",
+                    "graph_id": "default-graph",
+                    "action": "upsert",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 1,
+                    "record_ids": [],
+                    "example_text": "",
+                    "created_at": "2026-03-24T00:00:00+00:00",
+                    "updated_at": "2026-03-24T00:00:00+00:00",
+                },
+                {
+                    "id": "manual-global",
+                    "graph_id": "",
+                    "action": "suppress",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 1,
+                    "record_ids": [],
+                    "example_text": "",
+                    "created_at": "2026-03-24T00:01:00+00:00",
+                    "updated_at": "2026-03-24T00:01:00+00:00",
+                },
+                {
+                    "id": "manual-other",
+                    "graph_id": "other-graph",
+                    "action": "upsert",
+                    "relation_type": "SYNDROME_TO_FORMULA",
+                    "start_id": syndrome_id,
+                    "end_id": formula_id,
+                    "evidence_count": 1,
+                    "record_ids": [],
+                    "example_text": "",
+                    "created_at": "2026-03-24T00:02:00+00:00",
+                    "updated_at": "2026-03-24T00:02:00+00:00",
+                },
+            ]
+        }
+        with open(self.manual_relations_path, "w", encoding="utf-8") as handle:
+            json.dump(manual_payload, handle, ensure_ascii=False, indent=2)
+
+        list_response = self.client.get("/api/v1/graph/manual-relations/")
+        self.assertEqual(list_response.status_code, 200)
+        payload = list_response.json()
+        self.assertEqual(payload["total"], 2)
+        ids = {item["id"] for item in payload["records"]}
+        self.assertEqual(ids, {"manual-active", "manual-global"})

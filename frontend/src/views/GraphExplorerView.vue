@@ -7,8 +7,10 @@ import { useRoute, useRouter } from "vue-router";
 import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
+  deleteGraphManualRelation,
   fetchGraphEntityDetail,
   fetchGraphEntityPathways,
+  fetchGraphManualRelations,
   fetchGraphShowcase,
   fetchGraphSummary,
   predictNer,
@@ -16,11 +18,14 @@ import {
   saveAnnotationCandidate,
   searchCorpus,
   searchGraphEntities,
+  suppressGraphRelation,
+  upsertGraphManualRelation,
 } from "../services/api";
 import type {
   CorpusEntry,
   GraphEntity,
   GraphEntityDetail,
+  GraphManualRelationOverrideRecord,
   GraphEntityPathways,
   GraphRelation,
   GraphShowcaseCase,
@@ -51,6 +56,14 @@ const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
+function tf(key: string, params: Record<string, string | number>) {
+  let message = t(key);
+  for (const [name, value] of Object.entries(params)) {
+    message = message.split(`{${name}}`).join(String(value));
+  }
+  return message;
+}
+
 const graphSummary = ref<GraphSummary | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
 const selectedEntityDetail = ref<GraphEntityDetail | null>(null);
@@ -59,6 +72,9 @@ const nerPrediction = ref<NerPrediction | null>(null);
 const predictedGraphMatches = ref<Record<string, GraphEntity[]>>({});
 const relationPrediction = ref<RelationPrediction | null>(null);
 const relationHistory = ref<RelationPrediction[]>([]);
+const manualRelationOverrides = ref<GraphManualRelationOverrideRecord[]>([]);
+const loadingManualRelations = ref(false);
+const applyingManualGraphRelation = ref(false);
 const exportMessage = ref("");
 const savingCandidate = ref(false);
 const batchRelationPredicting = ref(false);
@@ -79,6 +95,8 @@ const showcaseError = ref("");
 const nerError = ref("");
 const relationPredictError = ref("");
 const relationBatchMessage = ref("");
+const manualGraphRelationError = ref("");
+const manualGraphRelationMessage = ref("");
 
 const keyword = ref("桂枝汤");
 const entityType = ref("FORMULA");
@@ -87,6 +105,11 @@ const relationInputText = ref("太阳病，头痛发热，汗出恶风，桂枝�
 const relationHeadKey = ref("");
 const relationTailKey = ref("");
 const manualRelationLabel = ref("SYNDROME_TO_FORMULA");
+const graphManualRelationType = ref("SYNDROME_TO_FORMULA");
+const graphManualRelationDirection = ref<"outgoing" | "incoming">("outgoing");
+const graphManualRelationKeyword = ref("");
+const graphManualRelationCandidates = ref<GraphEntity[]>([]);
+const graphManualRelationTargetId = ref("");
 const searchResults = ref<GraphEntity[]>([]);
 const searchTotal = ref(0);
 const corpusResults = ref<CorpusEntry[]>([]);
@@ -99,29 +122,20 @@ const manualEntityError = ref("");
 const entityDisplayNotes = ref<Record<string, string>>({});
 
 const entityTypeOptions = [
-  { label: "方剂", value: "FORMULA" },
-  { label: "证候", value: "SYNDROME" },
-  { label: "症状", value: "SYMPTOM" },
-  { label: "中药", value: "HERB" },
-  { label: "治法", value: "THERAPY" },
-  { label: "服法", value: "ADMINISTRATION" },
+  { label: formatEntityTypeLabel("FORMULA"), value: "FORMULA" },
+  { label: formatEntityTypeLabel("SYNDROME"), value: "SYNDROME" },
+  { label: formatEntityTypeLabel("SYMPTOM"), value: "SYMPTOM" },
+  { label: formatEntityTypeLabel("HERB"), value: "HERB" },
+  { label: formatEntityTypeLabel("THERAPY"), value: "THERAPY" },
+  { label: formatEntityTypeLabel("ADMINISTRATION"), value: "ADMINISTRATION" },
 ];
 
-const relationLabels: Record<string, string> = {
-  SYNDROME_HAS_SYMPTOM: "证候具有症状",
-  SYNDROME_TO_FORMULA: "证候对应方剂",
-  SYNDROME_TO_THERAPY: "证候采用治法",
-  FORMULA_CONTAINS_HERB: "方剂包含中药",
-  FORMULA_HAS_ADMINISTRATION: "方剂对应服法",
-  NO_RELATION: "无稳定关系",
-};
-
 const editableRelationOptions = [
-  { label: "证候具有症状", value: "SYNDROME_HAS_SYMPTOM" },
-  { label: "证候对应方剂", value: "SYNDROME_TO_FORMULA" },
-  { label: "证候采用治法（人工补充）", value: "SYNDROME_TO_THERAPY" },
-  { label: "方剂包含中药", value: "FORMULA_CONTAINS_HERB" },
-  { label: "方剂对应服法", value: "FORMULA_HAS_ADMINISTRATION" },
+  { label: formatRelationTypeLabel("SYNDROME_HAS_SYMPTOM"), value: "SYNDROME_HAS_SYMPTOM" },
+  { label: formatRelationTypeLabel("SYNDROME_TO_FORMULA"), value: "SYNDROME_TO_FORMULA" },
+  { label: `${formatRelationTypeLabel("SYNDROME_TO_THERAPY")}（${t("common.manual")}）`, value: "SYNDROME_TO_THERAPY" },
+  { label: formatRelationTypeLabel("FORMULA_CONTAINS_HERB"), value: "FORMULA_CONTAINS_HERB" },
+  { label: formatRelationTypeLabel("FORMULA_HAS_ADMINISTRATION"), value: "FORMULA_HAS_ADMINISTRATION" },
 ];
 
 const relationPairPriority: Record<string, number> = {
@@ -131,23 +145,14 @@ const relationPairPriority: Record<string, number> = {
   "FORMULA->ADMINISTRATION": 3,
 };
 
-const entityTypeLabels: Record<string, string> = {
-  FORMULA: "方剂",
-  SYNDROME: "证候",
-  SYMPTOM: "症状",
-  HERB: "中药",
-  THERAPY: "治法",
-  ADMINISTRATION: "服法",
-};
-
 const pathwayTypeLabels: Record<string, string> = {
-  SYNDROME_TO_FORMULA: "证候 -> 方剂",
-  SYMPTOM_SYNDROME_FORMULA: "症状 -> 证候 -> 方剂",
-  SYNDROME_FORMULA_HERB: "证候 -> 方剂 -> 中药",
-  SYNDROME_FORMULA_ADMINISTRATION: "证候 -> 方剂 -> 服法",
-  FORMULA_HERB: "方剂 -> 中药",
-  FORMULA_ADMINISTRATION: "方剂 -> 服法",
-  SYNDROME_SYMPTOM: "证候 -> 症状",
+  SYNDROME_TO_FORMULA: "explorer.pathType.syndromeFormula",
+  SYMPTOM_SYNDROME_FORMULA: "explorer.pathType.symptomSyndromeFormula",
+  SYNDROME_FORMULA_HERB: "explorer.pathType.syndromeFormulaHerb",
+  SYNDROME_FORMULA_ADMINISTRATION: "explorer.pathType.syndromeFormulaAdministration",
+  FORMULA_HERB: "explorer.pathType.formulaHerb",
+  FORMULA_ADMINISTRATION: "explorer.pathType.formulaAdministration",
+  SYNDROME_SYMPTOM: "explorer.pathType.syndromeSymptom",
 };
 
 const quickStats = computed(() => {
@@ -155,9 +160,9 @@ const quickStats = computed(() => {
     return [];
   }
   return [
-    { label: "节点", value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
-    { label: "关系", value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
-    { label: "证据边", value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
+    { label: t("explorer.stats.nodes"), value: graphSummary.value.entity_node_count.toLocaleString("zh-CN") },
+    { label: t("explorer.stats.relations"), value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
+    { label: t("explorer.stats.evidence"), value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
   ];
 });
 
@@ -182,6 +187,9 @@ const predictionMatchSummary = computed(() => {
 
 const selectedHeadEntity = computed(() => getPredictedEntityByKey(relationHeadKey.value));
 const selectedTailEntity = computed(() => getPredictedEntityByKey(relationTailKey.value));
+const selectedManualGraphTarget = computed(
+  () => graphManualRelationCandidates.value.find((item) => item.entity_id === graphManualRelationTargetId.value) || null,
+);
 const canRunRelation = computed(() => Boolean(selectedHeadEntity.value && selectedTailEntity.value && relationInputText.value.trim()));
 const batchRelationPairs = computed(() => {
   const pairs: Array<{ key: string; head: NerPredictionEntity; tail: NerPredictionEntity; priority: number }> = [];
@@ -337,16 +345,18 @@ const chainSummary = computed(() => {
     const administrations = outgoing.filter((item) => item.relation_type === "FORMULA_HAS_ADMINISTRATION").map((item) => item.related_entity.name);
 
     return [
-      syndromes.length ? `证候: ${syndromes.slice(0, 4).join("、")}` : "证候: 暂无明确证候链路",
-      herbs.length ? `中药: ${herbs.slice(0, 6).join("、")}` : "中药: 暂无药味关系",
-      administrations.length ? `服法: ${administrations.slice(0, 3).join("、")}` : "服法: 暂无服法关系",
+      syndromes.length ? tf("explorer.chain.syndrome", { value: syndromes.slice(0, 4).join("、") }) : t("explorer.chain.syndromeEmpty"),
+      herbs.length ? tf("explorer.chain.herb", { value: herbs.slice(0, 6).join("、") }) : t("explorer.chain.herbEmpty"),
+      administrations.length
+        ? tf("explorer.chain.administration", { value: administrations.slice(0, 3).join("、") })
+        : t("explorer.chain.administrationEmpty"),
     ];
   }
 
   return [
-    `实体类型: ${entityTypeLabels[entity.entity_type] || entity.entity_type}`,
-    `入边数量: ${selectedEntityDetail.value.stats.incoming_relation_count}`,
-    `出边数量: ${selectedEntityDetail.value.stats.outgoing_relation_count}`,
+    tf("explorer.chain.entityType", { value: formatEntityType(entity.entity_type) }),
+    tf("explorer.chain.incomingCount", { count: selectedEntityDetail.value.stats.incoming_relation_count }),
+    tf("explorer.chain.outgoingCount", { count: selectedEntityDetail.value.stats.outgoing_relation_count }),
   ];
 });
 
@@ -363,16 +373,16 @@ function formatEntryType(entryType: string | null) {
     return t("common.unknown");
   }
   if (entryType === "formula_entry") {
-    return "方剂条";
+    return t("explorer.entryType.formula");
   }
   if (entryType === "syndrome_entry") {
-    return "辨证条";
+    return t("explorer.entryType.syndrome");
   }
   return entryType;
 }
 
 function formatPathwayType(pathType: string) {
-  return pathwayTypeLabels[pathType] || pathType;
+  return pathwayTypeLabels[pathType] ? t(pathwayTypeLabels[pathType]) : pathType;
 }
 
 function predictedEntityKey(entity: NerPredictionEntity) {
@@ -442,13 +452,13 @@ async function addManualEntity() {
   exportMessage.value = "";
 
   if (!nerPrediction.value) {
-    manualEntityError.value = "请先运行一次 NER 抽取，再补充缺失实体。";
+    manualEntityError.value = t("explorer.errors.entityAddRunNerFirst");
     return;
   }
 
   const text = manualEntityText.value.trim();
   if (!text) {
-    manualEntityError.value = "请输入要补充的实体文本。";
+    manualEntityError.value = t("explorer.errors.entityAddTextRequired");
     return;
   }
 
@@ -458,18 +468,18 @@ async function addManualEntity() {
   if (manualEntityStart.value.trim()) {
     const parsed = Number.parseInt(manualEntityStart.value.trim(), 10);
     if (Number.isNaN(parsed) || parsed < 0) {
-      manualEntityError.value = "起始位置必须是大于等于 0 的整数。";
+      manualEntityError.value = t("explorer.errors.entityAddInvalidStart");
       return;
     }
     start = parsed;
   } else {
     const positions = findAllEntityPositions(sourceText, text);
     if (!positions.length) {
-      manualEntityError.value = "当前条文中没有找到这段文本，请检查输入。";
+      manualEntityError.value = t("explorer.errors.entityAddTextNotFound");
       return;
     }
     if (positions.length > 1) {
-      manualEntityError.value = `当前条文中“${text}”出现了 ${positions.length} 次，请补充起始位置。`;
+      manualEntityError.value = tf("explorer.errors.entityAddNeedStart", { text, count: positions.length });
       return;
     }
     start = positions[0];
@@ -477,7 +487,7 @@ async function addManualEntity() {
 
   const end = start + text.length;
   if (sourceText.slice(start, end) !== text) {
-    manualEntityError.value = "起始位置与实体文本不匹配，请重新检查。";
+    manualEntityError.value = t("explorer.errors.entityAddStartMismatch");
     return;
   }
 
@@ -490,7 +500,7 @@ async function addManualEntity() {
   const entityKey = predictedEntityKey(entity);
   const duplicate = predictedEntities.value.some((item) => predictedEntityKey(item) === entityKey);
   if (duplicate) {
-    manualEntityError.value = "相同位置和类型的实体已经存在，无需重复新增。";
+    manualEntityError.value = t("explorer.errors.entityAddDuplicate");
     return;
   }
 
@@ -514,7 +524,7 @@ async function addManualEntity() {
     relationTailKey.value = entityKey;
   }
 
-  exportMessage.value = `已新增实体“${text}”，可继续映射图谱、批量关系预测或提交候选记录。`;
+  exportMessage.value = tf("explorer.messages.entityAdded", { text });
   resetManualEntityForm();
 }
 
@@ -560,11 +570,14 @@ function removePredictedEntity(target: NerPredictionEntity) {
 
   relationBatchMessage.value = "";
   relationPredictError.value = "";
-  exportMessage.value = `已删除实体“${target.text}”，相关临时关系已同步清理。`;
+  exportMessage.value = tf("explorer.messages.entityRemoved", { text: target.text });
 }
 
 function graphCandidateSummary(candidate: GraphEntity) {
-  return `提及 ${candidate.mention_count} 次 · 覆盖 ${candidate.record_count} 条`;
+  return tf("explorer.messages.candidateSummary", {
+    mentionCount: candidate.mention_count,
+    recordCount: candidate.record_count,
+  });
 }
 
 function assignRelationEntity(role: "head" | "tail", entity: NerPredictionEntity) {
@@ -613,11 +626,11 @@ function recordRelationPrediction(prediction: RelationPrediction) {
 
 function applyManualRelation() {
   if (!selectedHeadEntity.value || !selectedTailEntity.value) {
-    relationPredictError.value = "请先选择头实体和尾实体，再手动添加关系。";
+    relationPredictError.value = t("explorer.errors.manualRelationSelectEntities");
     return;
   }
   if (predictedEntityKey(selectedHeadEntity.value) === predictedEntityKey(selectedTailEntity.value)) {
-    relationPredictError.value = "头实体和尾实体不能相同。";
+    relationPredictError.value = t("explorer.errors.relationHeadTailSame");
     return;
   }
 
@@ -635,8 +648,8 @@ function applyManualRelation() {
   relationPredictError.value = "";
   relationBatchMessage.value =
     manualRelationLabel.value === "SYNDROME_TO_THERAPY"
-      ? "已手动写入“证候采用治法”关系；该关系当前仅作为人工补充，不进入默认自动主流程。"
-      : "已手动写入当前关系，会覆盖同一对实体的旧结果。";
+      ? t("explorer.messages.manualTherapyRelationOnly")
+      : t("explorer.messages.manualRelationOverwritten");
   relationPrediction.value = prediction;
   recordRelationPrediction(prediction);
 }
@@ -648,7 +661,7 @@ function removeRelationPredictionByRecordKey(recordKey: string) {
     relationPrediction.value = null;
   }
   relationPredictError.value = "";
-  relationBatchMessage.value = target ? `已删除关系“${formatRelationType(target.label)}”。` : "";
+  relationBatchMessage.value = target ? tf("explorer.messages.relationRemoved", { relation: formatRelationType(target.label) }) : "";
 }
 
 function inspectRelationPrediction(prediction: RelationPrediction) {
@@ -664,7 +677,7 @@ async function loadGraphSummary() {
   try {
     graphSummary.value = await fetchGraphSummary();
   } catch {
-    graphError.value = "图谱摘要加载失败，请确认图谱接口可访问。";
+    graphError.value = t("home.errors.graphSummaryLoadFailed");
   } finally {
     loadingGraphSummary.value = false;
   }
@@ -677,9 +690,152 @@ async function loadShowcase() {
     const payload = await fetchGraphShowcase();
     showcaseCases.value = payload.cases;
   } catch {
-    showcaseError.value = "典型案例加载失败，请检查图谱接口。";
+    showcaseError.value = t("home.errors.showcaseLoadFailed");
   } finally {
     loadingShowcase.value = false;
+  }
+}
+
+async function loadManualGraphRelations() {
+  loadingManualRelations.value = true;
+  try {
+    const payload = await fetchGraphManualRelations();
+    manualRelationOverrides.value = payload.records;
+  } catch {
+    manualRelationOverrides.value = [];
+  } finally {
+    loadingManualRelations.value = false;
+  }
+}
+
+async function searchGraphManualRelationTargets() {
+  const normalizedKeyword = graphManualRelationKeyword.value.trim();
+  if (!normalizedKeyword) {
+    manualGraphRelationError.value = t("explorer.errors.graphManualKeywordRequired");
+    return;
+  }
+  manualGraphRelationError.value = "";
+  manualGraphRelationMessage.value = "";
+  try {
+    const payload = await searchGraphEntities({ keyword: normalizedKeyword, limit: 8 });
+    graphManualRelationCandidates.value = payload.results;
+    if (!payload.results.length) {
+      manualGraphRelationError.value = t("explorer.errors.graphManualTargetNotFound");
+      graphManualRelationTargetId.value = "";
+      return;
+    }
+    graphManualRelationTargetId.value = payload.results[0].entity_id;
+  } catch {
+    manualGraphRelationError.value = t("explorer.errors.graphManualTargetSearchFailed");
+  }
+}
+
+function buildRelationMutationPayloadFromDetail(relation: GraphRelation) {
+  const detail = selectedEntityDetail.value;
+  if (!detail) {
+    return null;
+  }
+  if (relation.direction === "outgoing") {
+    return {
+      startId: detail.entity.entity_id,
+      endId: relation.related_entity.entity_id,
+      relationType: relation.relation_type,
+    };
+  }
+  return {
+    startId: relation.related_entity.entity_id,
+    endId: detail.entity.entity_id,
+    relationType: relation.relation_type,
+  };
+}
+
+async function addManualGraphRelation() {
+  const detail = selectedEntityDetail.value;
+  if (!detail) {
+    manualGraphRelationError.value = t("explorer.errors.graphManualNeedCenterEntity");
+    return;
+  }
+  if (!selectedManualGraphTarget.value) {
+    manualGraphRelationError.value = t("explorer.errors.graphManualNeedTargetEntity");
+    return;
+  }
+
+  const startId = graphManualRelationDirection.value === "outgoing" ? detail.entity.entity_id : selectedManualGraphTarget.value.entity_id;
+  const endId = graphManualRelationDirection.value === "outgoing" ? selectedManualGraphTarget.value.entity_id : detail.entity.entity_id;
+
+  applyingManualGraphRelation.value = true;
+  manualGraphRelationError.value = "";
+  manualGraphRelationMessage.value = "";
+  try {
+    const payload = await upsertGraphManualRelation({
+      startId,
+      endId,
+      relationType: graphManualRelationType.value,
+      exampleText: detail.mentions[0]?.clause_text || detail.entity.name,
+      evidenceCount: 1,
+      recordIds: detail.mentions.slice(0, 3).map((item) => item.record_id),
+    });
+    manualRelationOverrides.value = payload.manual_relations.records;
+    await loadEntityDetail(detail.entity.entity_id, false);
+    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationAdded");
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRelationAddFailed"));
+    } else {
+      manualGraphRelationError.value = t("explorer.errors.graphManualRelationAddFailed");
+    }
+  } finally {
+    applyingManualGraphRelation.value = false;
+  }
+}
+
+async function suppressRelationFromDetail(relation: GraphRelation) {
+  const payload = buildRelationMutationPayloadFromDetail(relation);
+  if (!payload) {
+    manualGraphRelationError.value = t("explorer.errors.graphManualNoEntityDetail");
+    return;
+  }
+  applyingManualGraphRelation.value = true;
+  manualGraphRelationError.value = "";
+  manualGraphRelationMessage.value = "";
+  try {
+    const response = await suppressGraphRelation({
+      ...payload,
+      exampleText: relation.example_text || t("explorer.messages.graphManualSuppressExample"),
+    });
+    manualRelationOverrides.value = response.manual_relations.records;
+    await loadEntityDetail(selectedEntityDetail.value!.entity.entity_id, false);
+    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationSuppressed");
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRelationDeleteFailed"));
+    } else {
+      manualGraphRelationError.value = t("explorer.errors.graphManualRelationDeleteFailed");
+    }
+  } finally {
+    applyingManualGraphRelation.value = false;
+  }
+}
+
+async function rollbackManualOverride(overrideId: string) {
+  applyingManualGraphRelation.value = true;
+  manualGraphRelationError.value = "";
+  manualGraphRelationMessage.value = "";
+  try {
+    const response = await deleteGraphManualRelation(overrideId);
+    manualRelationOverrides.value = response.manual_relations.records;
+    if (selectedEntityDetail.value) {
+      await loadEntityDetail(selectedEntityDetail.value.entity.entity_id, false);
+    }
+    manualGraphRelationMessage.value = t("explorer.messages.graphManualRelationRollbackDone");
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      manualGraphRelationError.value = String(error.response?.data?.detail || t("explorer.errors.graphManualRollbackFailed"));
+    } else {
+      manualGraphRelationError.value = t("explorer.errors.graphManualRollbackFailed");
+    }
+  } finally {
+    applyingManualGraphRelation.value = false;
   }
 }
 
@@ -690,7 +846,7 @@ async function loadEntityPathways(entityId: string) {
     entityPathways.value = await fetchGraphEntityPathways(entityId, 12);
   } catch {
     entityPathways.value = null;
-    pathwayError.value = "诊疗链路生成失败，请稍后重试。";
+    pathwayError.value = t("explorer.errors.pathwayLoadFailed");
   } finally {
     loadingEntityPathways.value = false;
   }
@@ -709,7 +865,7 @@ async function loadEntityDetail(entityId: string, updateRoute = true) {
     }
     await loadEntityPathways(entityId);
   } catch {
-    graphError.value = "实体详情加载失败，请稍后重试。";
+    graphError.value = t("explorer.errors.entityDetailLoadFailed");
     entityPathways.value = null;
     pathwayError.value = "";
   } finally {
@@ -720,7 +876,7 @@ async function loadEntityDetail(entityId: string, updateRoute = true) {
 async function runSearch(updateRoute = true) {
   const normalizedKeyword = keyword.value.trim();
   if (!normalizedKeyword) {
-    searchError.value = "请输入关键词后再检索。";
+    searchError.value = t("explorer.errors.searchKeywordRequired");
     return;
   }
 
@@ -762,7 +918,7 @@ async function runSearch(updateRoute = true) {
       pathwayError.value = "";
     }
   } catch {
-    searchError.value = "检索失败，请检查后端服务、图谱接口或跨域配置。";
+    searchError.value = t("explorer.errors.searchFailed");
   } finally {
     searching.value = false;
   }
@@ -792,7 +948,7 @@ async function resolvePredictedEntitiesToGraph(prediction: NerPrediction) {
 async function runNerPrediction() {
   const text = nerInputText.value.trim();
   if (!text) {
-    nerError.value = "请输入待抽取条文。";
+    nerError.value = t("explorer.errors.nerInputRequired");
     return;
   }
 
@@ -814,9 +970,9 @@ async function runNerPrediction() {
     await resolvePredictedEntitiesToGraph(prediction);
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      nerError.value = String(error.response?.data?.detail || "NER 抽取失败，请确认模型检查点已加载。");
+      nerError.value = String(error.response?.data?.detail || t("explorer.errors.nerFailedWithCheckpoint"));
     } else {
-      nerError.value = "NER 抽取失败，请稍后重试。";
+      nerError.value = t("explorer.errors.nerFailed");
     }
   } finally {
     predictingNer.value = false;
@@ -825,15 +981,15 @@ async function runNerPrediction() {
 
 async function runRelationPrediction() {
   if (!selectedHeadEntity.value || !selectedTailEntity.value) {
-    relationPredictError.value = "请先从抽取结果里选择头实体和尾实体。";
+    relationPredictError.value = t("explorer.errors.relationSelectHeadTail");
     return;
   }
   if (predictedEntityKey(selectedHeadEntity.value) === predictedEntityKey(selectedTailEntity.value)) {
-    relationPredictError.value = "头实体和尾实体不能相同。";
+    relationPredictError.value = t("explorer.errors.relationHeadTailSame");
     return;
   }
   if (!relationInputText.value.trim()) {
-    relationPredictError.value = "请输入关系判断文本。";
+    relationPredictError.value = t("explorer.errors.relationInputRequired");
     return;
   }
 
@@ -852,9 +1008,9 @@ async function runRelationPrediction() {
     recordRelationPrediction(prediction);
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      relationPredictError.value = String(error.response?.data?.detail || "关系预测失败，请确认 RE 检查点已加载。");
+      relationPredictError.value = String(error.response?.data?.detail || t("explorer.errors.relationFailedWithCheckpoint"));
     } else {
-      relationPredictError.value = "关系预测失败，请稍后重试。";
+      relationPredictError.value = t("explorer.errors.relationFailed");
     }
   } finally {
     relationPredicting.value = false;
@@ -863,11 +1019,11 @@ async function runRelationPrediction() {
 
 async function runBatchRelationPrediction() {
   if (!relationInputText.value.trim()) {
-    relationPredictError.value = "请输入关系判断文本。";
+    relationPredictError.value = t("explorer.errors.relationInputRequired");
     return;
   }
   if (!batchRelationPairs.value.length) {
-    relationPredictError.value = "当前没有可批量判断的合法实体对。";
+    relationPredictError.value = t("explorer.errors.batchNoPairs");
     return;
   }
 
@@ -898,12 +1054,16 @@ async function runBatchRelationPrediction() {
       .filter((item) => item.label !== "NO_RELATION")
       .sort((left, right) => right.confidence - left.confidence)[0];
     relationPrediction.value = preferred || results[0] || null;
-    relationBatchMessage.value = `已批量判断 ${results.length} 组实体对，保留 ${results.filter((item) => item.label !== "NO_RELATION").length} 条非空关系${failedCount ? `，失败 ${failedCount} 组` : ""}。`;
+    relationBatchMessage.value = tf("explorer.messages.batchRelationDone", {
+      total: results.length,
+      kept: results.filter((item) => item.label !== "NO_RELATION").length,
+      failedPart: failedCount ? tf("explorer.messages.batchRelationFailedPart", { failed: failedCount }) : "",
+    });
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      relationPredictError.value = String(error.response?.data?.detail || "批量关系判断失败，请确认 RE 检查点已加载。");
+      relationPredictError.value = String(error.response?.data?.detail || t("explorer.errors.batchRelationFailedWithCheckpoint"));
     } else {
-      relationPredictError.value = "批量关系判断失败，请稍后重试。";
+      relationPredictError.value = t("explorer.errors.batchRelationFailed");
     }
   } finally {
     batchRelationPredicting.value = false;
@@ -940,7 +1100,7 @@ async function jumpToPredictedEntity(entity: NerPredictionEntity) {
 
 function downloadSessionGraph() {
   if (!sessionGraphNodes.value.length) {
-    exportMessage.value = "当前没有可导出的会话图数据。";
+    exportMessage.value = t("explorer.errors.exportNoGraphData");
     return;
   }
 
@@ -957,12 +1117,15 @@ function downloadSessionGraph() {
   link.download = fileName;
   link.click();
   URL.revokeObjectURL(url);
-  exportMessage.value = `已导出 ${sessionGraphNodes.value.length} 个节点、${sessionGraphEdges.value.length} 条关系。`;
+  exportMessage.value = tf("explorer.messages.exportDone", {
+    nodeCount: sessionGraphNodes.value.length,
+    edgeCount: sessionGraphEdges.value.length,
+  });
 }
 
 async function saveSessionCandidate() {
   if (!sessionGraphNodes.value.length) {
-    exportMessage.value = "当前没有可提交的候选记录。";
+    exportMessage.value = t("explorer.errors.saveCandidateNoData");
     return;
   }
 
@@ -973,12 +1136,12 @@ async function saveSessionCandidate() {
       source_page: "explore",
       session_payload: sessionGraphExportPayload.value as Record<string, unknown>,
     });
-    exportMessage.value = `已保存候选记录 ${payload.record_id}。`;
+    exportMessage.value = tf("explorer.messages.saveCandidateDone", { recordId: payload.record_id });
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      exportMessage.value = String(error.response?.data?.detail || "候选记录保存失败，请检查后端接口。");
+      exportMessage.value = String(error.response?.data?.detail || t("explorer.errors.saveCandidateFailed"));
     } else {
-      exportMessage.value = "候选记录保存失败，请稍后重试。";
+      exportMessage.value = t("explorer.errors.saveCandidateFailedRetry");
     }
   } finally {
     savingCandidate.value = false;
@@ -1002,7 +1165,7 @@ async function applyRouteState() {
   const routeEntityType = typeof route.query.entityType === "string" ? route.query.entityType : "";
   const routeEntityId = typeof route.query.entityId === "string" ? route.query.entityId : "";
 
-  keyword.value = routeKeyword || "桂枝汤";
+  keyword.value = routeKeyword || t("explorer.defaultKeyword");
   entityType.value = routeEntityType || "FORMULA";
 
   await runSearch(false);
@@ -1025,7 +1188,7 @@ async function openShowcaseCase(caseItem: GraphShowcaseCase) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadGraphSummary(), loadShowcase()]);
+  await Promise.all([loadGraphSummary(), loadShowcase(), loadManualGraphRelations()]);
   await applyRouteState();
   await runNerPrediction();
 });
@@ -1043,13 +1206,11 @@ watch(
       <div class="panel-header explorer-header">
         <div>
           <p class="panel-kicker">{{ t("explorer.heroKicker") }}</p>
-          <h1>图谱浏览</h1>
-          <p class="hero-description explorer-description">
-            在这里按实体类型检索知识节点，查看入边出边、原文条文证据，并把模型抽到的实体自动映射到已有图谱节点，再辅助判断关系。
-          </p>
+          <h1>{{ t("explorer.heroTitle") }}</h1>
+          <p class="hero-description explorer-description">{{ t("explorer.heroDescription") }}</p>
         </div>
         <div class="explorer-actions">
-          <RouterLink to="/" class="ghost-link">返回总览</RouterLink>
+          <RouterLink to="/" class="ghost-link">{{ t("explorer.backToOverview") }}</RouterLink>
         </div>
       </div>
 
@@ -1065,7 +1226,7 @@ watch(
       <div class="panel-header compact-header">
         <div>
           <p class="panel-kicker">{{ t("explorer.quickCasesKicker") }}</p>
-          <h2>一键演示案例</h2>
+            <h2>{{ t("explorer.quickCasesTitle") }}</h2>
         </div>
       </div>
         <StatePanel v-if="showcaseError" tone="error">
@@ -1084,14 +1245,14 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.extractionKicker") }}</p>
-            <h2>条文智能抽取</h2>
+            <h2>{{ t("explorer.extractionTitle") }}</h2>
           </div>
         </div>
 
         <form class="model-form" @submit.prevent="runNerPrediction">
-          <textarea v-model="nerInputText" rows="5" placeholder="输入一条《伤寒论》条文，系统会用当前 NER 模型先抽取实体。" />
+          <textarea v-model="nerInputText" rows="5" :placeholder="t('explorer.nerInputPlaceholder')" />
           <div class="cta-row compact-cta-row">
-            <button class="primary-button" type="submit" :disabled="predictingNer">{{ predictingNer ? "抽取中..." : "运行 NER 抽取" }}</button>
+            <button class="primary-button" type="submit" :disabled="predictingNer">{{ predictingNer ? t("explorer.nerRunning") : t("explorer.runNer") }}</button>
           </div>
         </form>
 
@@ -1099,7 +1260,7 @@ watch(
           <p>{{ nerError }}</p>
         </StatePanel>
         <StatePanel v-else tone="info">
-          <p>当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。</p>
+          <p>{{ t("explorer.nerHint") }}</p>
         </StatePanel>
       </article>
 
@@ -1107,18 +1268,18 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.predictionResultKicker") }}</p>
-            <h2>模型抽取结果</h2>
+            <h2>{{ t("explorer.predictionResultTitle") }}</h2>
           </div>
         </div>
 
         <StatePanel v-if="!nerPrediction" tone="warning">
-          <p>先运行一次抽取，这里会显示实体结果和类型分布。</p>
+          <p>{{ t("explorer.nerResultHint") }}</p>
         </StatePanel>
         <template v-else>
           <div class="prediction-summary-strip">
-            <div class="breakdown-item"><span>抽取实体</span><strong>{{ predictionMatchSummary.total }}</strong></div>
-            <div class="breakdown-item"><span>成功映射</span><strong>{{ predictionMatchSummary.matched }}</strong></div>
-            <div class="breakdown-item"><span>待人工判断</span><strong>{{ predictionMatchSummary.unmatched }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.total") }}</span><strong>{{ predictionMatchSummary.total }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.matched") }}</span><strong>{{ predictionMatchSummary.matched }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("explorer.predictSummary.unmatched") }}</span><strong>{{ predictionMatchSummary.unmatched }}</strong></div>
           </div>
 
           <div class="breakdown-list predicted-breakdown-list">
@@ -1130,32 +1291,32 @@ watch(
 
           <div class="manual-entity-panel">
             <div class="manual-entity-header">
-              <strong>手动补充实体</strong>
-              <span>当模型漏掉实体时，可直接补录到本次会话中。服法类实体可以额外保存完整服法文本，用于展示和复核。</span>
+              <strong>{{ t("explorer.manualEntity.title") }}</strong>
+              <span>{{ t("explorer.manualEntity.desc") }}</span>
             </div>
             <div class="manual-entity-grid">
-              <input v-model="manualEntityText" type="text" placeholder="实体文本，例如：头痛" />
+              <input v-model="manualEntityText" type="text" :placeholder="t('explorer.manualEntity.textPlaceholder')" />
               <select v-model="manualEntityType">
                 <option v-for="option in entityTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
-              <input v-model="manualEntityStart" type="text" inputmode="numeric" placeholder="起始位置，可选" />
-              <button class="ghost-button" type="button" @click="addManualEntity">新增实体</button>
+              <input v-model="manualEntityStart" type="text" inputmode="numeric" :placeholder="t('explorer.manualEntity.startPlaceholder')" />
+              <button class="ghost-button" type="button" @click="addManualEntity">{{ t("explorer.manualEntity.add") }}</button>
             </div>
             <textarea
               v-model="manualEntityNote"
               rows="2"
-              placeholder="完整服法文本/备注，可选。例如：右三味，以水三升，煮取一升二合，去滓。分温再服。"
+              :placeholder="t('explorer.manualEntity.notePlaceholder')"
             />
             <StatePanel v-if="manualEntityError" tone="error">
               <p>{{ manualEntityError }}</p>
             </StatePanel>
             <StatePanel v-else tone="info">
-              <p>若实体在条文中只出现一次，可只填文本和类型；若重复出现，请补起始位置。</p>
+              <p>{{ t("explorer.manualEntity.hint") }}</p>
             </StatePanel>
           </div>
 
           <StatePanel v-if="resolvingPredictedEntities" tone="info">
-            <p>正在把抽取结果映射到图谱节点...</p>
+            <p>{{ t("explorer.mappingRunning") }}</p>
           </StatePanel>
 
           <div class="entity-chip-list explorer-entity-chip-list">
@@ -1164,30 +1325,30 @@ watch(
               <span>{{ formatEntityType(entity.type) }}</span>
               <small>{{ entity.start }}-{{ entity.end }}</small>
               <p class="entity-preview-copy">{{ entityPreviewText(entity) }}</p>
-              <p v-if="entityDisplayNotes[predictedEntityKey(entity)]" class="entity-note-copy">备注: {{ entityDisplayNotes[predictedEntityKey(entity)] }}</p>
+              <p v-if="entityDisplayNotes[predictedEntityKey(entity)]" class="entity-note-copy">{{ t("explorer.manualEntity.noteLabel") }}: {{ entityDisplayNotes[predictedEntityKey(entity)] }}</p>
 
               <div class="selection-strip">
-                <span class="selection-pill" :class="{ active: relationHeadKey === predictedEntityKey(entity) }">头实体</span>
-                <span class="selection-pill" :class="{ active: relationTailKey === predictedEntityKey(entity) }">尾实体</span>
+                <span class="selection-pill" :class="{ active: relationHeadKey === predictedEntityKey(entity) }">{{ t("explorer.relation.headEntity") }}</span>
+                <span class="selection-pill" :class="{ active: relationTailKey === predictedEntityKey(entity) }">{{ t("explorer.relation.tailEntity") }}</span>
               </div>
 
               <div class="candidate-panel">
-                <p class="candidate-title">图谱候选节点</p>
+                <p class="candidate-title">{{ t("explorer.candidates.title") }}</p>
                 <div v-if="getPredictedMatches(entity).length" class="candidate-list">
                   <button v-for="candidate in getPredictedMatches(entity)" :key="candidate.entity_id" type="button" class="candidate-chip" @click="openGraphCandidate(candidate)">
                     <strong>{{ candidate.name }}</strong>
                     <span>{{ graphCandidateSummary(candidate) }}</span>
                   </button>
                 </div>
-                <p v-else class="candidate-empty">当前图谱里没有稳定命中，建议先用它作为检索词人工确认。</p>
+                <p v-else class="candidate-empty">{{ t("explorer.candidates.empty") }}</p>
               </div>
 
               <div class="entity-chip-actions">
-                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('head', entity)">设为头实体</button>
-                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">设为尾实体</button>
-                <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">设为检索词</button>
-                <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">打开最佳映射</button>
-                <button class="ghost-button mini-button danger-button" type="button" @click="removePredictedEntity(entity)">删除实体</button>
+                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('head', entity)">{{ t("explorer.actions.setHead") }}</button>
+                <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">{{ t("explorer.actions.setTail") }}</button>
+                <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">{{ t("explorer.actions.setKeyword") }}</button>
+                <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">{{ t("explorer.actions.openBestMatch") }}</button>
+                <button class="ghost-button mini-button danger-button" type="button" @click="removePredictedEntity(entity)">{{ t("explorer.actions.deleteEntity") }}</button>
               </div>
             </div>
           </div>
@@ -1200,51 +1361,51 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.relationAssistantKicker") }}</p>
-            <h2>关系辅助判断</h2>
+            <h2>{{ t("explorer.relationAssistantTitle") }}</h2>
           </div>
         </div>
 
         <form class="model-form" @submit.prevent="runRelationPrediction">
-          <textarea v-model="relationInputText" rows="4" placeholder="输入或确认当前关系判断用的条文文本。" />
+          <textarea v-model="relationInputText" rows="4" :placeholder="t('explorer.relation.inputPlaceholder')" />
 
-          <p class="status-text">当前可批量判断 {{ batchRelationPairs.length }} 组合法实体对，仅覆盖证候-方剂、证候-症状、方剂-中药、方剂-服法。</p>
+          <p class="status-text">{{ tf("explorer.relation.batchCountHint", { count: batchRelationPairs.length }) }}</p>
 
           <div class="relation-form-grid">
             <div class="relation-form-block">
-              <label>头实体</label>
+              <label>{{ t("explorer.relation.headEntity") }}</label>
               <div class="selected-entity-card" :class="{ active: Boolean(selectedHeadEntity) }">
-                <strong>{{ selectedHeadEntity?.text || '未选择' }}</strong>
-                <span>{{ selectedHeadEntity ? formatEntityType(selectedHeadEntity.type) : '请在上方抽取结果中选择' }}</span>
+                <strong>{{ selectedHeadEntity?.text || t("explorer.relation.notSelected") }}</strong>
+                <span>{{ selectedHeadEntity ? formatEntityType(selectedHeadEntity.type) : t("explorer.relation.selectFromAbove") }}</span>
               </div>
             </div>
             <div class="relation-form-block">
-              <label>尾实体</label>
+              <label>{{ t("explorer.relation.tailEntity") }}</label>
               <div class="selected-entity-card" :class="{ active: Boolean(selectedTailEntity) }">
-                <strong>{{ selectedTailEntity?.text || '未选择' }}</strong>
-                <span>{{ selectedTailEntity ? formatEntityType(selectedTailEntity.type) : '请在上方抽取结果中选择' }}</span>
+                <strong>{{ selectedTailEntity?.text || t("explorer.relation.notSelected") }}</strong>
+                <span>{{ selectedTailEntity ? formatEntityType(selectedTailEntity.type) : t("explorer.relation.selectFromAbove") }}</span>
               </div>
             </div>
           </div>
 
           <div class="cta-row compact-cta-row">
-            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">{{ relationPredicting ? '判断中...' : '运行关系判断' }}</button>
+            <button class="primary-button" type="submit" :disabled="relationPredicting || batchRelationPredicting || !canRunRelation">{{ relationPredicting ? t("explorer.relation.predicting") : t("explorer.relation.predict") }}</button>
             <button class="ghost-button" type="button" :disabled="relationPredicting || batchRelationPredicting || !canRunBatchRelation" @click="runBatchRelationPrediction">
-              {{ batchRelationPredicting ? "批量判断中..." : "批量关系预测" }}
+              {{ batchRelationPredicting ? t("explorer.relation.batchPredicting") : t("explorer.relation.batchPredict") }}
             </button>
           </div>
 
           <div class="manual-relation-panel">
             <div class="manual-relation-header">
-              <strong>手动新增 / 覆盖关系</strong>
-              <span>当模型判断不准时，可直接把当前头尾实体写成你确认的关系。</span>
+              <strong>{{ t("explorer.relation.manualTitle") }}</strong>
+              <span>{{ t("explorer.relation.manualDesc") }}</span>
             </div>
             <div class="manual-relation-grid">
               <select v-model="manualRelationLabel">
                 <option v-for="option in editableRelationOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
               </select>
-              <button class="ghost-button" type="button" :disabled="!canRunRelation" @click="applyManualRelation">新增或覆盖关系</button>
+              <button class="ghost-button" type="button" :disabled="!canRunRelation" @click="applyManualRelation">{{ t("explorer.relation.manualApply") }}</button>
             </div>
-            <p class="status-text">`证候采用治法` 当前只开放人工补充，不参与自动批量关系预测。</p>
+            <p class="status-text">{{ t("explorer.relation.manualTherapyHint") }}</p>
           </div>
         </form>
 
@@ -1255,7 +1416,7 @@ watch(
           <p>{{ relationBatchMessage }}</p>
         </StatePanel>
         <StatePanel v-else tone="info">
-          <p>当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断“证候-方剂”或“证候-症状”是否成立。</p>
+          <p>{{ t("explorer.relation.modelHint") }}</p>
         </StatePanel>
       </article>
 
@@ -1263,19 +1424,19 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.relationResultKicker") }}</p>
-            <h2>关系预测结果</h2>
+            <h2>{{ t("explorer.relationResultTitle") }}</h2>
           </div>
         </div>
 
         <StatePanel v-if="!relationPrediction" tone="warning">
-          <p>选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。</p>
+          <p>{{ t("explorer.relation.resultHint") }}</p>
         </StatePanel>
         <template v-else>
           <div class="relation-result-card">
-            <div class="breakdown-item"><span>预测关系</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
-            <div class="breakdown-item"><span>置信度</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
-            <div class="breakdown-item"><span>头实体</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
-            <div class="breakdown-item"><span>尾实体</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("models.predictedRelation") }}</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("models.confidence") }}</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("models.headEntity") }}</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
+            <div class="breakdown-item"><span>{{ t("models.tailEntity") }}</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
           </div>
 
           <div class="dataset-split-grid relation-score-grid">
@@ -1291,22 +1452,22 @@ watch(
       <div class="panel-header compact-header">
         <div>
           <p class="panel-kicker">{{ t("explorer.sessionGraphKicker") }}</p>
-          <h2>本次条文临时会话图</h2>
+          <h2>{{ t("explorer.sessionGraphTitle") }}</h2>
         </div>
         <div class="session-action-group">
           <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="saveSessionCandidate">
-            {{ savingCandidate ? "保存中..." : "提交候选记录" }}
+            {{ savingCandidate ? t("common.saving") : t("explorer.session.saveCandidate") }}
           </button>
-          <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="downloadSessionGraph">导出 JSON</button>
+          <button type="button" class="ghost-button session-export-button" :disabled="!sessionGraphNodes.length || savingCandidate" @click="downloadSessionGraph">{{ t("explorer.session.exportJson") }}</button>
         </div>
       </div>
 
       <StatePanel v-if="!predictedEntities.length" tone="warning">
-        <p>先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。</p>
+        <p>{{ t("explorer.session.noEntitiesHint") }}</p>
       </StatePanel>
       <template v-else>
         <StatePanel :tone="exportMessage ? 'success' : 'info'">
-          <p>{{ exportMessage || '可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。' }}</p>
+          <p>{{ exportMessage || t("explorer.session.defaultHint") }}</p>
         </StatePanel>
         <div class="session-graph-layout">
           <div class="session-graph-canvas">
@@ -1321,7 +1482,7 @@ watch(
               class="session-graph-edge-label"
               :style="{ left: `${edge.midX}%`, top: `${edge.midY}%` }"
               @click="removeRelationPredictionByRecordKey(edge.recordKey)"
-              :title="`点击删除：${formatRelationType(edge.label)}`"
+              :title="tf('explorer.session.edgeDeleteTitle', { relation: formatRelationType(edge.label) })"
             >
               {{ formatRelationType(edge.label) }}
             </button>
@@ -1342,22 +1503,22 @@ watch(
 
           <div class="session-graph-sidebar">
             <div class="session-side-block">
-              <strong>实体节点</strong>
+              <strong>{{ t("explorer.session.entityNodes") }}</strong>
               <div class="session-side-list">
                 <div v-for="node in sessionGraphNodes" :key="`${node.key}-item`" class="session-side-card">
                   <span>{{ formatEntityType(node.entity.type) }}</span>
                   <strong>{{ node.entity.text }}</strong>
                   <p v-if="entityDisplayNotes[node.key]">{{ entityDisplayNotes[node.key] }}</p>
-                  <p>{{ node.matches.length ? `已映射 ${node.matches.length} 个候选` : '暂无映射候选' }}</p>
+                  <p>{{ node.matches.length ? tf("explorer.session.mappedCandidates", { count: node.matches.length }) : t("explorer.session.noMappedCandidates") }}</p>
                 </div>
               </div>
             </div>
 
             <div class="session-side-block">
-              <strong>已判断关系</strong>
+              <strong>{{ t("explorer.session.predictedRelations") }}</strong>
               <div class="session-side-list">
                 <div v-if="!relationHistory.length" class="session-side-card empty">
-                  <p>运行一次关系判断后，这里会累计本次条文的关系结果。</p>
+                  <p>{{ t("explorer.session.noRelationsHint") }}</p>
                 </div>
                 <div
                   v-for="item in relationHistory"
@@ -1367,12 +1528,12 @@ watch(
                   <span>{{ formatRelationType(item.label) }}</span>
                   <strong>{{ item.head.text }} -> {{ item.tail.text }}</strong>
                   <p>
-                    置信度 {{ item.confidence.toFixed(4) }}
-                    <template v-if="item.source_mode === 'manual'"> · 人工补充</template>
+                    {{ tf("explorer.session.confidence", { score: item.confidence.toFixed(4) }) }}
+                    <template v-if="item.source_mode === 'manual'"> · {{ t("common.manual") }}</template>
                   </p>
                   <div class="session-card-actions">
-                    <button type="button" class="ghost-button mini-button" @click="inspectRelationPrediction(item)">查看/编辑</button>
-                    <button type="button" class="ghost-button mini-button danger-button" @click="removeRelationPredictionByRecordKey(relationRecordKey(item))">删除关系</button>
+                    <button type="button" class="ghost-button mini-button" @click="inspectRelationPrediction(item)">{{ t("explorer.actions.viewEdit") }}</button>
+                    <button type="button" class="ghost-button mini-button danger-button" @click="removeRelationPredictionByRecordKey(relationRecordKey(item))">{{ t("explorer.actions.deleteRelation") }}</button>
                   </div>
                 </div>
               </div>
@@ -1387,12 +1548,12 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.keywordSearchKicker") }}</p>
-            <h2>实体检索</h2>
+            <h2>{{ t("explorer.keywordSearchTitle") }}</h2>
           </div>
         </div>
 
         <form class="search-form search-form-stacked" @submit.prevent="runSearch()">
-          <input v-model="keyword" type="text" placeholder="输入方剂、证候、症状或中药，例如：桂枝汤" />
+          <input v-model="keyword" type="text" :placeholder="t('explorer.searchInputPlaceholder')" />
 
           <div class="search-row">
             <div class="chip-group">
@@ -1400,7 +1561,7 @@ watch(
                 {{ option.label }}
               </button>
             </div>
-            <button class="primary-button" type="submit" :disabled="searching">{{ searching ? '检索中...' : '开始检索' }}</button>
+            <button class="primary-button" type="submit" :disabled="searching">{{ searching ? t("explorer.searching") : t("explorer.search") }}</button>
           </div>
         </form>
 
@@ -1408,7 +1569,7 @@ watch(
           <p>{{ searchError }}</p>
         </StatePanel>
         <StatePanel v-else tone="info">
-          <p>图谱命中 {{ searchTotal }} 个实体，条文命中 {{ corpusTotal }} 条。</p>
+          <p>{{ tf("explorer.searchResultSummary", { entityCount: searchTotal, corpusCount: corpusTotal }) }}</p>
         </StatePanel>
 
         <div class="entity-result-list">
@@ -1417,7 +1578,7 @@ watch(
               <strong>{{ entity.name }}</strong>
               <span>{{ formatEntityType(entity.entity_type) }}</span>
             </div>
-            <p>提及 {{ entity.mention_count }} 次 · 覆盖 {{ entity.record_count }} 条 · 首次出现 {{ entity.first_record_id }}</p>
+            <p>{{ tf("explorer.entityCardSummary", { mentionCount: entity.mention_count, recordCount: entity.record_count, firstRecordId: entity.first_record_id }) }}</p>
           </button>
         </div>
       </article>
@@ -1426,7 +1587,7 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.relationPreviewKicker") }}</p>
-            <h2>关系网络概览</h2>
+            <h2>{{ t("explorer.relationPreviewTitle") }}</h2>
           </div>
         </div>
 
@@ -1434,10 +1595,10 @@ watch(
           <p>{{ graphError }}</p>
         </StatePanel>
         <StatePanel v-else-if="loadingEntityDetail" tone="info">
-          <p>正在加载实体详情...</p>
+          <p>{{ t("explorer.loadingEntityDetail") }}</p>
         </StatePanel>
         <StatePanel v-else-if="!selectedEntityDetail" tone="warning">
-          <p>先检索并选择一个实体，系统会展示它的关联关系与原文证据。</p>
+          <p>{{ t("explorer.noEntitySelectedHint") }}</p>
         </StatePanel>
 
         <template v-else>
@@ -1447,9 +1608,9 @@ watch(
               <h3>{{ selectedEntityDetail.entity.name }}</h3>
             </div>
             <div class="focus-metrics">
-              <span>入边 {{ selectedEntityDetail.stats.incoming_relation_count }}</span>
-              <span>出边 {{ selectedEntityDetail.stats.outgoing_relation_count }}</span>
-              <span>证据 {{ selectedEntityDetail.stats.mention_count }}</span>
+              <span>{{ tf("explorer.focus.incoming", { count: selectedEntityDetail.stats.incoming_relation_count }) }}</span>
+              <span>{{ tf("explorer.focus.outgoing", { count: selectedEntityDetail.stats.outgoing_relation_count }) }}</span>
+              <span>{{ tf("explorer.focus.evidence", { count: selectedEntityDetail.stats.mention_count }) }}</span>
             </div>
           </div>
 
@@ -1466,33 +1627,112 @@ watch(
 
           <div class="relation-columns">
             <div class="relation-column">
-              <p class="column-title">典型链路</p>
+              <p class="column-title">{{ t("explorer.columns.chain") }}</p>
               <div class="chain-list">
                 <div v-for="item in chainSummary" :key="item" class="chain-item">{{ item }}</div>
               </div>
 
-              <p class="column-title pathway-title">可用诊疗路径</p>
+              <p class="column-title pathway-title">{{ t("explorer.columns.pathway") }}</p>
               <div class="chain-list">
-                <div v-if="loadingEntityPathways" class="chain-item">正在生成路径...</div>
+                <div v-if="loadingEntityPathways" class="chain-item">{{ t("explorer.pathway.loading") }}</div>
                 <div v-else-if="pathwayError" class="chain-item">{{ pathwayError }}</div>
                 <template v-else-if="entityPathways?.paths.length">
                   <div v-for="pathway in entityPathways.paths.slice(0, 6)" :key="`${pathway.path_type}-${pathway.chain_text}`" class="chain-item pathway-item">
                     <strong>{{ formatPathwayType(pathway.path_type) }}</strong>
                     <p>{{ pathway.chain_text }}</p>
-                    <small>证据强度 {{ pathway.evidence_score }}</small>
+                    <small>{{ tf("explorer.pathway.evidenceScore", { score: pathway.evidence_score }) }}</small>
                   </div>
                 </template>
-                <div v-else class="chain-item">当前实体暂无稳定诊疗路径。</div>
+                <div v-else class="chain-item">{{ t("explorer.pathway.empty") }}</div>
               </div>
             </div>
 
             <div class="relation-column">
-              <p class="column-title">主要关系</p>
+              <p class="column-title">{{ t("explorer.columns.relation") }}</p>
+              <div class="manual-relation-panel graph-manual-relation-panel">
+                <div class="manual-relation-header">
+                  <strong>{{ t("explorer.graphManual.title") }}</strong>
+                  <span>{{ t("explorer.graphManual.desc") }}</span>
+                </div>
+                <div class="manual-relation-grid">
+                  <select v-model="graphManualRelationDirection">
+                    <option value="outgoing">{{ t("explorer.graphManual.directionOutgoing") }}</option>
+                    <option value="incoming">{{ t("explorer.graphManual.directionIncoming") }}</option>
+                  </select>
+                  <select v-model="graphManualRelationType">
+                    <option v-for="option in editableRelationOptions" :key="`graph-manual-${option.value}`" :value="option.value">
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </div>
+                <div class="manual-relation-grid">
+                  <input v-model="graphManualRelationKeyword" type="text" :placeholder="t('explorer.graphManual.keywordPlaceholder')" />
+                  <button class="ghost-button" type="button" :disabled="applyingManualGraphRelation" @click="searchGraphManualRelationTargets">
+                    {{ t("explorer.graphManual.searchTarget") }}
+                  </button>
+                </div>
+                <div class="manual-relation-grid">
+                  <select v-model="graphManualRelationTargetId">
+                    <option value="">{{ t("explorer.graphManual.selectTarget") }}</option>
+                    <option v-for="candidate in graphManualRelationCandidates" :key="candidate.entity_id" :value="candidate.entity_id">
+                      {{ candidate.name }} / {{ formatEntityType(candidate.entity_type) }}
+                    </option>
+                  </select>
+                  <button class="ghost-button" type="button" :disabled="applyingManualGraphRelation || !graphManualRelationTargetId" @click="addManualGraphRelation">
+                    {{ t("explorer.graphManual.addRelation") }}
+                  </button>
+                </div>
+              </div>
+
+              <StatePanel v-if="manualGraphRelationError" tone="error">
+                <p>{{ manualGraphRelationError }}</p>
+              </StatePanel>
+              <StatePanel v-else-if="manualGraphRelationMessage" tone="success">
+                <p>{{ manualGraphRelationMessage }}</p>
+              </StatePanel>
+
               <div class="relation-list">
                 <div v-for="relation in [...selectedEntityDetail.outgoing_relations, ...selectedEntityDetail.incoming_relations].slice(0, 8)" :key="`${relation.direction}-${relation.relation_type}-${relation.related_entity.entity_id}`" class="relation-item">
-                  <span>{{ relation.direction === 'outgoing' ? '出边' : '入边' }}</span>
+                  <span>{{ relation.direction === 'outgoing' ? t("explorer.graphManual.outgoing") : t("explorer.graphManual.incoming") }}</span>
                   <strong>{{ formatRelationType(relation.relation_type) }}</strong>
-                  <p>{{ relation.related_entity.name }} · 证据 {{ relation.evidence_count }}</p>
+                  <p>{{ tf("explorer.graphManual.relationEvidence", { name: relation.related_entity.name, count: relation.evidence_count }) }}</p>
+                  <div class="entity-chip-actions relation-item-actions">
+                    <button class="ghost-button mini-button danger-button" type="button" :disabled="applyingManualGraphRelation" @click="suppressRelationFromDetail(relation)">
+                      {{ t("explorer.actions.deleteRelation") }}
+                    </button>
+                    <button
+                      v-if="relation.manual_override && relation.manual_override_id"
+                      class="ghost-button mini-button"
+                      type="button"
+                      :disabled="applyingManualGraphRelation"
+                      @click="rollbackManualOverride(String(relation.manual_override_id))"
+                    >
+                      {{ t("explorer.graphManual.rollback") }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="session-side-list graph-override-list">
+                <div v-if="loadingManualRelations" class="session-side-card empty">
+                  <p>{{ t("explorer.graphManual.loadingOverrides") }}</p>
+                </div>
+                <div v-else-if="!manualRelationOverrides.length" class="session-side-card empty">
+                  <p>{{ t("explorer.graphManual.noOverrides") }}</p>
+                </div>
+                <div v-else class="session-side-card">
+                  <strong>{{ t("explorer.graphManual.recentOverrides") }}</strong>
+                  <div class="session-side-list">
+                    <div v-for="item in manualRelationOverrides.slice(0, 4)" :key="item.id" class="session-side-card action-card">
+                      <span>{{ item.action === "upsert" ? t("explorer.graphManual.actionUpsert") : t("explorer.graphManual.actionSuppress") }} · {{ formatRelationType(item.relation_type) }}</span>
+                      <p>{{ item.start_id }} -> {{ item.end_id }}</p>
+                      <div class="session-card-actions">
+                        <button class="ghost-button mini-button" type="button" :disabled="applyingManualGraphRelation" @click="rollbackManualOverride(item.id)">
+                          {{ t("explorer.graphManual.rollback") }}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1506,18 +1746,18 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.evidenceTracebackKicker") }}</p>
-            <h2>原文证据回溯</h2>
+            <h2>{{ t("explorer.evidenceTracebackTitle") }}</h2>
           </div>
         </div>
 
         <StatePanel v-if="!selectedEntityDetail" tone="warning">
-          <p>选择一个实体后，这里会显示它在条文中的出现位置与证据片段。</p>
+          <p>{{ t("explorer.evidenceHint") }}</p>
         </StatePanel>
         <div v-else class="evidence-list">
           <article v-for="mention in selectedEntityDetail.mentions" :key="`${mention.clause_id}-${mention.start}-${mention.end}`" class="evidence-card">
             <div class="evidence-meta">
               <span>{{ mention.record_id }}</span>
-              <span>{{ mention.line_number ? `行号 ${mention.line_number}` : '行号未知' }}</span>
+              <span>{{ mention.line_number ? tf("explorer.lineNumber", { line: mention.line_number }) : t("explorer.lineUnknown") }}</span>
               <span>{{ formatEntryType(mention.entry_type) }}</span>
             </div>
             <p>{{ mention.clause_text }}</p>
@@ -1529,14 +1769,14 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("explorer.textPreviewKicker") }}</p>
-            <h2>条文检索结果</h2>
+            <h2>{{ t("explorer.textPreviewTitle") }}</h2>
           </div>
         </div>
 
         <div class="result-list">
           <div v-for="entry in corpusResults" :key="entry.id" class="result-item">
             <div class="result-meta">
-              <span>条文 #{{ entry.id }}</span>
+              <span>{{ tf("home.recordLabel", { id: entry.id }) }}</span>
               <span v-if="entry.formula_name">{{ entry.formula_name }}</span>
             </div>
             <p>{{ entry.text }}</p>

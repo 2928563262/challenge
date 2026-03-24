@@ -73,6 +73,8 @@ export interface GraphRelation {
   evidence_count: number;
   record_ids: string[];
   example_text: string;
+  manual_override?: boolean;
+  manual_override_id?: string | null;
   related_entity: GraphEntity;
 }
 
@@ -184,6 +186,31 @@ export interface GraphNeo4jSyncResponse {
   status: GraphNeo4jSyncStatus;
 }
 
+export interface GraphManualRelationOverrideRecord {
+  id: string;
+  graph_id: string;
+  action: "upsert" | "suppress";
+  relation_type: string;
+  start_id: string;
+  end_id: string;
+  evidence_count: number;
+  record_ids: string[];
+  example_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GraphManualRelationOverrideListResponse {
+  path: string;
+  total: number;
+  records: GraphManualRelationOverrideRecord[];
+}
+
+export interface GraphManualRelationOverrideMutationResponse {
+  record: GraphManualRelationOverrideRecord;
+  manual_relations: GraphManualRelationOverrideListResponse;
+}
+
 export interface DatasetSplitSummary {
   record_count?: number;
   token_count?: number;
@@ -293,6 +320,19 @@ export interface TrainingJobsStatus {
 export interface TrainingJobStartResponse {
   job: TrainingJobRecord;
   jobs: TrainingJobsStatus;
+}
+
+export interface SystemPipelineRunResponse {
+  refresh_accepted: boolean;
+  refresh_graph: boolean;
+  sync_neo4j: boolean;
+  accepted_pipeline?: AcceptedPipelineRefreshResponse;
+  graph_refresh?: ReviewedGraphRefreshResponse;
+  neo4j_sync?: GraphNeo4jSyncReport;
+  neo4j_sync_status?: GraphNeo4jSyncStatus;
+  training_jobs_started: TrainingJobRecord[];
+  training_jobs_status: TrainingJobsStatus;
+  model_summary: ModelSummary;
 }
 
 export interface NerPredictionEntity {

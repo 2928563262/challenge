@@ -9,6 +9,7 @@ from .views import (
     NerStatusView,
     RelationPredictView,
     RelationStatusView,
+    SystemPipelineRunView,
     TrainingJobListView,
     TrainingJobStartView,
 )
@@ -19,6 +20,7 @@ urlpatterns = [
     path("registry/activate/", ModelRegistryActivationView.as_view(), name="model-registry-activate"),
     path("jobs/", TrainingJobListView.as_view(), name="training-job-list"),
     path("jobs/start/", TrainingJobStartView.as_view(), name="training-job-start"),
+    path("pipeline/run/", SystemPipelineRunView.as_view(), name="system-pipeline-run"),
     path("datasets/accepted/refresh/", AcceptedPipelineRefreshView.as_view(), name="accepted-pipeline-refresh"),
     path("ner/status/", NerStatusView.as_view(), name="ner-status"),
     path("ner/predict/", NerPredictView.as_view(), name="ner-predict"),

@@ -40,6 +40,14 @@ const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
 
+function tf(key: string, params: Record<string, string | number>) {
+  let message = t(key);
+  for (const [name, value] of Object.entries(params)) {
+    message = message.split(`{${name}}`).join(String(value));
+  }
+  return message;
+}
+
 const records = ref<AnnotationCandidateRecord[]>([]);
 const selectedRecord = ref<AnnotationCandidateRecord | null>(null);
 const loadingList = ref(false);
@@ -55,13 +63,13 @@ const editableSourceText = ref("");
 const editableNodes = ref<EditableNode[]>([]);
 const editableEdges = ref<EditableEdge[]>([]);
 
-const statusOptions = [
+const statusOptions = computed(() => [
   { value: "all", label: t("common.all") },
   { value: "pending", label: formatStatus("pending") },
   { value: "reviewed", label: formatStatus("reviewed") },
   { value: "accepted", label: formatStatus("accepted") },
   { value: "rejected", label: formatStatus("rejected") },
-];
+]);
 
 const entityTypeOptions = [
   { value: "SYNDROME", label: formatEntityType("SYNDROME") },
@@ -80,13 +88,6 @@ const relationOptions = [
   { value: "FORMULA_HAS_ADMINISTRATION", label: formatRelationLabel("FORMULA_HAS_ADMINISTRATION") },
 ];
 
-const rawPayloadPreview = computed(() => {
-  if (!selectedRecord.value) {
-    return "{}";
-  }
-  return JSON.stringify(buildSessionPayload(), null, 2);
-});
-
 function formatStatus(status: string) {
   return formatStatusLabel(status);
 }
@@ -104,16 +105,16 @@ function summarizeAutoPipelineRefresh(meta?: AnnotationCandidateRecord["auto_pip
     return "";
   }
   if (!meta.ok) {
-    return `自动回流失败：${meta.detail || "未知错误"}`;
+    return `${t("annotation.messages.autoPipelineFailed")}: ${meta.detail || t("common.unknown")}`;
   }
-  const parts = [`自动回流已执行：accepted ${meta.export_record_count ?? 0} 条`];
+  const parts = [tf("annotation.messages.autoPipelineDone", { count: meta.export_record_count ?? 0 })];
   if (typeof meta.merge_ner_added_count === "number") {
     parts.push(`NER +${meta.merge_ner_added_count}`);
   }
   if (typeof meta.merge_relation_added_count === "number") {
     parts.push(`RE +${meta.merge_relation_added_count}`);
   }
-  return parts.join("，");
+  return parts.join("; ");
 }
 
 function summarizeAutoGraphRefresh(meta?: AnnotationCandidateRecord["auto_graph_refresh"]) {
@@ -121,12 +122,12 @@ function summarizeAutoGraphRefresh(meta?: AnnotationCandidateRecord["auto_graph_
     return "";
   }
   if (!meta.ok) {
-    return `图谱自动刷新失败：${meta.detail || "未知错误"}`;
+    return `${t("annotation.messages.autoGraphFailed")}: ${meta.detail || t("common.unknown")}`;
   }
   const name = meta.run_name || "graph-reviewed";
   const nodes = meta.entity_node_count ?? 0;
   const relations = meta.entity_relation_count ?? 0;
-  return `图谱已自动刷新：${name}（节点 ${nodes}，关系 ${relations}）`;
+  return tf("annotation.messages.autoGraphDone", { name, nodes, relations });
 }
 
 function normalizeNumber(value: unknown, fallback = 0) {
@@ -205,7 +206,7 @@ async function loadList() {
     const payload = await fetchAnnotationCandidates(30, statusFilter.value === "all" ? undefined : statusFilter.value);
     records.value = payload.results;
   } catch {
-    errorMessage.value = "候选记录列表加载失败，请检查后端接口。";
+    errorMessage.value = t("annotation.errors.loadListFailed");
   } finally {
     loadingList.value = false;
   }
@@ -223,7 +224,7 @@ async function loadDetail(recordId: string, updateRoute = true) {
     }
     records.value = records.value.map((item) => (item.record_id === recordId ? { ...item, ...selectedRecord.value! } : item));
   } catch {
-    errorMessage.value = "候选记录详情加载失败。";
+    errorMessage.value = t("annotation.errors.loadDetailFailed");
   } finally {
     loadingDetail.value = false;
   }
@@ -259,13 +260,15 @@ async function updateStatus(status: string) {
     }
     const pipelineMessage = summarizeAutoPipelineRefresh(updated.auto_pipeline_refresh);
     const graphMessage = summarizeAutoGraphRefresh(updated.auto_graph_refresh);
-    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("；");
-    actionMessage.value = combinedMessage ? `状态已更新为 ${formatStatus(status)}。${combinedMessage}` : `状态已更新为 ${formatStatus(status)}。`;
+    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("; ");
+    actionMessage.value = combinedMessage
+      ? `${tf("annotation.messages.statusUpdated", { status: formatStatus(status) })} ${combinedMessage}`
+      : tf("annotation.messages.statusUpdated", { status: formatStatus(status) });
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      errorMessage.value = String(error.response?.data?.detail || "状态更新失败。");
+      errorMessage.value = String(error.response?.data?.detail || t("annotation.errors.updateStatusFailed"));
     } else {
-      errorMessage.value = "状态更新失败。";
+      errorMessage.value = t("annotation.errors.updateStatusFailed");
     }
   } finally {
     updatingStatus.value = false;
@@ -292,9 +295,9 @@ async function exportAcceptedRecords() {
     link.download = `accepted-candidates-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    actionMessage.value = `已导出 ${payload.total} 条已采纳记录。`;
+    actionMessage.value = tf("annotation.messages.exportDone", { count: payload.total });
   } catch {
-    errorMessage.value = "导出已采纳记录失败。";
+    errorMessage.value = t("annotation.errors.exportFailed");
   } finally {
     exportingAccepted.value = false;
   }
@@ -441,7 +444,7 @@ async function saveEdits() {
   }
   const sourceText = editableSourceText.value.trim();
   if (!sourceText) {
-    errorMessage.value = "原始条文不能为空。";
+    errorMessage.value = t("annotation.errors.sourceTextRequired");
     return;
   }
 
@@ -459,13 +462,13 @@ async function saveEdits() {
     records.value = records.value.map((item) => (item.record_id === updated.record_id ? { ...item, ...updated } : item));
     const pipelineMessage = summarizeAutoPipelineRefresh(updated.auto_pipeline_refresh);
     const graphMessage = summarizeAutoGraphRefresh(updated.auto_graph_refresh);
-    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("；");
-    actionMessage.value = combinedMessage ? `记录已保存。${combinedMessage}` : "记录内容已保存，节点和关系变更已同步写入候选记录。";
+    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("; ");
+    actionMessage.value = combinedMessage ? `${t("annotation.messages.saveDone")} ${combinedMessage}` : t("annotation.messages.saveDone");
   } catch (error: unknown) {
     if (axios.isAxiosError(error)) {
-      errorMessage.value = String(error.response?.data?.detail || "保存修改失败。");
+      errorMessage.value = String(error.response?.data?.detail || t("annotation.errors.saveFailed"));
     } else {
-      errorMessage.value = "保存修改失败。";
+      errorMessage.value = t("annotation.errors.saveFailed");
     }
   } finally {
     savingEdits.value = false;
@@ -474,7 +477,7 @@ async function saveEdits() {
 
 async function applyRouteState() {
   const routeStatus = typeof route.query.status === "string" ? route.query.status : "";
-  if (routeStatus && statusOptions.some((item) => item.value === routeStatus)) {
+  if (routeStatus && statusOptions.value.some((item) => item.value === routeStatus)) {
     statusFilter.value = routeStatus;
   }
 
@@ -520,10 +523,8 @@ watch(
       <div class="panel-header explorer-header">
         <div>
           <p class="panel-kicker">{{ t("annotation.heroKicker") }}</p>
-          <h1>候选记录复核</h1>
-          <p class="hero-description explorer-description">
-            查看从图谱浏览页提交的候选记录，对条文、实体节点和关系结果进行快速复核，并在系统内直接修订后保存。
-          </p>
+          <h1>{{ t("annotation.heroTitle") }}</h1>
+          <p class="hero-description explorer-description">{{ t("annotation.heroDescription") }}</p>
         </div>
         <button type="button" class="ghost-button" :disabled="exportingAccepted" @click="exportAcceptedRecords">
           {{ exportingAccepted ? t("common.exporting") : t("common.exportAcceptedRecords") }}
@@ -536,7 +537,7 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("annotation.candidatesKicker") }}</p>
-            <h2>候选记录列表</h2>
+            <h2>{{ t("annotation.candidatesTitle") }}</h2>
           </div>
         </div>
 
@@ -557,7 +558,7 @@ watch(
           <p>{{ errorMessage }}</p>
         </StatePanel>
         <StatePanel v-else-if="loadingList" tone="info">
-          <p>正在加载候选记录...</p>
+          <p>{{ t("annotation.loadingList") }}</p>
         </StatePanel>
         <div v-else class="entity-result-list annotation-record-list">
           <button
@@ -573,7 +574,7 @@ watch(
               <span>{{ formatStatus(record.status) }}</span>
             </div>
             <p>{{ record.text_preview }}</p>
-            <p>节点 {{ record.node_count }} · 关系 {{ record.edge_count }}</p>
+            <p>{{ tf("annotation.recordSummary", { nodeCount: record.node_count, edgeCount: record.edge_count }) }}</p>
           </button>
         </div>
       </article>
@@ -582,10 +583,10 @@ watch(
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("annotation.detailKicker") }}</p>
-            <h2>记录详情</h2>
+            <h2>{{ t("annotation.detailTitle") }}</h2>
           </div>
           <button type="button" class="primary-button" :disabled="!selectedRecord || savingEdits" @click="saveEdits">
-            {{ savingEdits ? t("common.saving") : "保存修改" }}
+            {{ savingEdits ? t("common.saving") : t("annotation.saveEdits") }}
           </button>
         </div>
 
@@ -596,10 +597,10 @@ watch(
           <p>{{ actionMessage }}</p>
         </StatePanel>
         <StatePanel v-if="loadingDetail" tone="info">
-          <p>正在加载详情...</p>
+          <p>{{ t("annotation.loadingDetail") }}</p>
         </StatePanel>
         <StatePanel v-else-if="!selectedRecord" tone="warning">
-          <p>先从左侧选择一条候选记录。</p>
+          <p>{{ t("annotation.noRecordSelected") }}</p>
         </StatePanel>
 
         <template v-else>
@@ -610,8 +611,8 @@ watch(
               <textarea v-model="editableSourceText" class="annotation-source-text" rows="4" />
             </div>
             <div class="focus-metrics">
-              <span>节点 {{ editableNodes.length }}</span>
-              <span>关系 {{ editableEdges.length }}</span>
+              <span>{{ tf("annotation.nodesCount", { count: editableNodes.length }) }}</span>
+              <span>{{ tf("annotation.edgesCount", { count: editableEdges.length }) }}</span>
               <span>{{ selectedRecord.created_at.slice(0, 19).replace("T", " ") }}</span>
             </div>
           </div>
@@ -626,19 +627,19 @@ watch(
               :disabled="updatingStatus"
               @click="updateStatus(option.value)"
             >
-              {{ updatingStatus && selectedRecord.status !== option.value ? "处理中..." : option.label }}
+              {{ updatingStatus && selectedRecord.status !== option.value ? t("annotation.updating") : option.label }}
             </button>
           </div>
 
           <div class="relation-columns annotation-detail-columns">
             <div class="relation-column">
               <div class="annotation-section-header">
-                <p class="column-title">实体节点</p>
-                <button type="button" class="ghost-button mini-button" @click="addNode">新增实体</button>
+                <p class="column-title">{{ t("annotation.nodeSectionTitle") }}</p>
+                <button type="button" class="ghost-button mini-button" @click="addNode">{{ t("annotation.addNode") }}</button>
               </div>
               <div class="session-side-list">
                 <div v-if="!editableNodes.length" class="session-side-card empty">
-                  <p>当前记录没有实体节点。</p>
+                  <p>{{ t("annotation.noNodes") }}</p>
                 </div>
                 <div
                   v-for="(node, index) in editableNodes"
@@ -646,7 +647,7 @@ watch(
                   class="session-side-card annotation-edit-card"
                 >
                   <div class="annotation-node-grid">
-                    <input v-model="node.text" type="text" placeholder="实体文本" />
+                    <input v-model="node.text" type="text" :placeholder="t('annotation.nodeTextPlaceholder')" />
                     <select v-model="node.type">
                       <option v-for="option in entityTypeOptions" :key="option.value" :value="option.value">
                         {{ option.label }}
@@ -654,14 +655,14 @@ watch(
                     </select>
                   </div>
                   <div class="annotation-position-grid">
-                    <input v-model.number="node.start" type="number" min="0" placeholder="开始位置" />
-                    <input v-model.number="node.end" type="number" min="0" placeholder="结束位置" />
+                    <input v-model.number="node.start" type="number" min="0" :placeholder="t('annotation.startPos')" />
+                    <input v-model.number="node.end" type="number" min="0" :placeholder="t('annotation.endPos')" />
                   </div>
-                  <textarea v-model="node.noteText" rows="3" placeholder="备注或完整服法文本，可选" />
+                  <textarea v-model="node.noteText" rows="3" :placeholder="t('annotation.notePlaceholder')" />
                   <div class="annotation-edit-actions">
                     <span>{{ formatEntityType(node.type) }}</span>
                     <button type="button" class="ghost-button mini-button danger-button" @click="removeNode(index)">
-                      删除实体
+                      {{ t("annotation.removeNode") }}
                     </button>
                   </div>
                 </div>
@@ -670,42 +671,53 @@ watch(
 
             <div class="relation-column">
               <div class="annotation-section-header">
-                <p class="column-title">关系结果</p>
-                <button type="button" class="ghost-button mini-button" @click="addEdge">新增关系</button>
+                <p class="column-title">{{ t("annotation.edgeSectionTitle") }}</p>
+                <button type="button" class="ghost-button mini-button" @click="addEdge">{{ t("annotation.addEdge") }}</button>
               </div>
               <div class="session-side-list">
                 <div v-if="!editableEdges.length" class="session-side-card empty">
-                  <p>当前记录没有关系结果。</p>
+                  <p>{{ t("annotation.noEdges") }}</p>
                 </div>
                 <div
                   v-for="(edge, index) in editableEdges"
                   :key="`${selectedRecord.record_id}-edge-${index}`"
                   class="session-side-card annotation-edit-card"
                 >
-                  <select v-model="edge.label" class="annotation-relation-select">
-                    <option v-for="option in relationOptions" :key="option.value" :value="option.value">
-                      {{ option.label }}
-                    </option>
-                  </select>
+                  <div class="annotation-edge-topline">
+                    <select v-model="edge.label" class="annotation-relation-select">
+                      <option v-for="option in relationOptions" :key="option.value" :value="option.value">
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <button type="button" class="ghost-button mini-button danger-button" @click="removeEdge(index)">
+                      {{ t("annotation.removeEdge") }}
+                    </button>
+                  </div>
 
                   <div class="annotation-edge-meta-grid">
-                    <input v-model.number="edge.confidence" type="number" min="0" max="1" step="0.01" placeholder="置信度" />
-                    <select v-model="edge.sourceMode">
-                      <option value="manual">{{ t("common.manual") }}</option>
-                      <option value="model">{{ t("common.model") }}</option>
-                    </select>
+                    <label class="annotation-field">
+                      <span>{{ t("models.confidence") }}</span>
+                      <input v-model.number="edge.confidence" type="number" min="0" max="1" step="0.01" />
+                    </label>
+                    <label class="annotation-field">
+                      <span>{{ t("annotation.sourceMode") }}</span>
+                      <select v-model="edge.sourceMode">
+                        <option value="manual">{{ t("common.manual") }}</option>
+                        <option value="model">{{ t("common.model") }}</option>
+                      </select>
+                    </label>
                   </div>
 
                   <div class="annotation-edge-block">
-                    <strong>头实体</strong>
+                    <strong>{{ t("models.headEntity") }}</strong>
                     <select class="annotation-node-select" @change="handleNodeSelection(edge, 'head', $event)">
                       <option value="">{{ t("common.fromExistingEntities") }}</option>
                       <option v-for="(node, nodeIndex) in editableNodes" :key="`head-${nodeIndex}`" :value="nodeIndex">
-                        {{ node.text || `实体 ${nodeIndex + 1}` }} / {{ formatEntityType(node.type) }}
+                        {{ node.text || `${t("annotation.node")} ${nodeIndex + 1}` }} / {{ formatEntityType(node.type) }}
                       </option>
                     </select>
                     <div class="annotation-edge-entity-grid">
-                      <input v-model="edge.headText" type="text" placeholder="头实体文本" />
+                      <input v-model="edge.headText" type="text" :placeholder="t('models.headEntityText')" />
                       <select v-model="edge.headType">
                         <option v-for="option in entityTypeOptions" :key="`head-type-${option.value}`" :value="option.value">
                           {{ option.label }}
@@ -713,21 +725,21 @@ watch(
                       </select>
                     </div>
                     <div class="annotation-position-grid">
-                      <input v-model.number="edge.headStart" type="number" min="0" placeholder="开始位置" />
-                      <input v-model.number="edge.headEnd" type="number" min="0" placeholder="结束位置" />
+                      <input v-model.number="edge.headStart" type="number" min="0" :placeholder="t('annotation.startPos')" />
+                      <input v-model.number="edge.headEnd" type="number" min="0" :placeholder="t('annotation.endPos')" />
                     </div>
                   </div>
 
                   <div class="annotation-edge-block">
-                    <strong>尾实体</strong>
+                    <strong>{{ t("models.tailEntity") }}</strong>
                     <select class="annotation-node-select" @change="handleNodeSelection(edge, 'tail', $event)">
                       <option value="">{{ t("common.fromExistingEntities") }}</option>
                       <option v-for="(node, nodeIndex) in editableNodes" :key="`tail-${nodeIndex}`" :value="nodeIndex">
-                        {{ node.text || `实体 ${nodeIndex + 1}` }} / {{ formatEntityType(node.type) }}
+                        {{ node.text || `${t("annotation.node")} ${nodeIndex + 1}` }} / {{ formatEntityType(node.type) }}
                       </option>
                     </select>
                     <div class="annotation-edge-entity-grid">
-                      <input v-model="edge.tailText" type="text" placeholder="尾实体文本" />
+                      <input v-model="edge.tailText" type="text" :placeholder="t('models.tailEntityText')" />
                       <select v-model="edge.tailType">
                         <option v-for="option in entityTypeOptions" :key="`tail-type-${option.value}`" :value="option.value">
                           {{ option.label }}
@@ -735,25 +747,17 @@ watch(
                       </select>
                     </div>
                     <div class="annotation-position-grid">
-                      <input v-model.number="edge.tailStart" type="number" min="0" placeholder="开始位置" />
-                      <input v-model.number="edge.tailEnd" type="number" min="0" placeholder="结束位置" />
+                      <input v-model.number="edge.tailStart" type="number" min="0" :placeholder="t('annotation.startPos')" />
+                      <input v-model.number="edge.tailEnd" type="number" min="0" :placeholder="t('annotation.endPos')" />
                     </div>
                   </div>
 
                   <div class="annotation-edit-actions">
                     <span>{{ formatRelationLabel(edge.label) }}</span>
-                    <button type="button" class="ghost-button mini-button danger-button" @click="removeEdge(index)">
-                      删除关系
-                    </button>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-
-          <div class="relation-column annotation-payload-block">
-            <p class="column-title">保存后 Payload 预览</p>
-            <pre class="annotation-payload">{{ rawPayloadPreview }}</pre>
           </div>
         </template>
       </article>

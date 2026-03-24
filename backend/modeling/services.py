@@ -222,6 +222,76 @@ def run_accepted_pipeline_refresh(limit: int | None = None) -> dict[str, Any]:
     }
 
 
+def run_system_pipeline(
+    *,
+    refresh_accepted: bool = True,
+    refresh_graph: bool = True,
+    sync_neo4j: bool = False,
+    start_ner_training: bool = False,
+    start_relation_training: bool = False,
+    training_dataset_source: str = "merged",
+    training_epochs: int = 3,
+    training_batch_size: int = 4,
+    training_learning_rate: float | None = None,
+    activate_training: bool = False,
+) -> dict[str, Any]:
+    if start_ner_training and start_relation_training:
+        raise ValueError("For memory safety, start at most one training task per pipeline run.")
+
+    payload: dict[str, Any] = {
+        "refresh_accepted": refresh_accepted,
+        "refresh_graph": refresh_graph,
+        "sync_neo4j": sync_neo4j,
+        "training_jobs_started": [],
+    }
+
+    if refresh_accepted:
+        payload["accepted_pipeline"] = run_accepted_pipeline_refresh(limit=None)
+
+    if refresh_graph:
+        from graph.services import run_reviewed_graph_refresh
+
+        payload["graph_refresh"] = run_reviewed_graph_refresh(
+            statuses=["accepted", "reviewed"],
+            limit=None,
+            sync_neo4j=sync_neo4j,
+        )
+    elif sync_neo4j:
+        from graph.services import run_neo4j_sync, get_graph_sync_status
+
+        payload["neo4j_sync"] = run_neo4j_sync()
+        payload["neo4j_sync_status"] = get_graph_sync_status()
+
+    if start_ner_training:
+        payload["training_jobs_started"].append(
+            run_training_job(
+                task="ner",
+                dataset_source=training_dataset_source,
+                run_name=None,
+                epochs=training_epochs,
+                batch_size=training_batch_size,
+                learning_rate=training_learning_rate,
+                activate=activate_training,
+            )
+        )
+    elif start_relation_training:
+        payload["training_jobs_started"].append(
+            run_training_job(
+                task="relation",
+                dataset_source=training_dataset_source,
+                run_name=None,
+                epochs=training_epochs,
+                batch_size=training_batch_size,
+                learning_rate=training_learning_rate,
+                activate=activate_training,
+            )
+        )
+
+    payload["training_jobs_status"] = get_training_jobs_status(limit=20)
+    payload["model_summary"] = get_model_summary()
+    return payload
+
+
 def _decode_entities(text: str, labels: list[str]) -> list[dict[str, object]]:
     entities = []
     current_type = None

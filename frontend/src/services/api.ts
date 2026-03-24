@@ -11,6 +11,8 @@ import type {
   GraphActivationResponse,
   GraphNeo4jSyncResponse,
   GraphNeo4jSyncStatus,
+  GraphManualRelationOverrideListResponse,
+  GraphManualRelationOverrideMutationResponse,
   GraphEntityDetail,
   GraphEntityPathways,
   GraphEntitySearchResult,
@@ -23,6 +25,7 @@ import type {
   NerPrediction,
   RelationPrediction,
   AcceptedPipelineRefreshResponse,
+  SystemPipelineRunResponse,
   TrainingJobsStatus,
   TrainingJobStartResponse,
 } from "../types/api";
@@ -81,6 +84,56 @@ export async function fetchGraphNeo4jSyncStatus() {
 
 export async function syncGraphToNeo4j() {
   const response = await apiClient.post<GraphNeo4jSyncResponse>("/graph/neo4j/sync/", {});
+  return response.data;
+}
+
+export async function fetchGraphManualRelations(graphId?: string) {
+  const response = await apiClient.get<GraphManualRelationOverrideListResponse>("/graph/manual-relations/", {
+    params: {
+      graph_id: graphId || undefined,
+    },
+  });
+  return response.data;
+}
+
+export async function upsertGraphManualRelation(payload: {
+  startId: string;
+  endId: string;
+  relationType: string;
+  exampleText?: string;
+  evidenceCount?: number;
+  recordIds?: string[];
+}) {
+  const response = await apiClient.post<GraphManualRelationOverrideMutationResponse>("/graph/manual-relations/", {
+    action: "upsert",
+    start_id: payload.startId,
+    end_id: payload.endId,
+    relation_type: payload.relationType,
+    example_text: payload.exampleText || "",
+    evidence_count: payload.evidenceCount ?? 1,
+    record_ids: payload.recordIds ?? [],
+  });
+  return response.data;
+}
+
+export async function suppressGraphRelation(payload: {
+  startId: string;
+  endId: string;
+  relationType: string;
+  exampleText?: string;
+}) {
+  const response = await apiClient.post<GraphManualRelationOverrideMutationResponse>("/graph/manual-relations/", {
+    action: "suppress",
+    start_id: payload.startId,
+    end_id: payload.endId,
+    relation_type: payload.relationType,
+    example_text: payload.exampleText || "",
+  });
+  return response.data;
+}
+
+export async function deleteGraphManualRelation(overrideId: string) {
+  const response = await apiClient.delete<GraphManualRelationOverrideMutationResponse>(`/graph/manual-relations/${encodeURIComponent(overrideId)}/`);
   return response.data;
 }
 
@@ -162,6 +215,33 @@ export async function startTrainingJob(payload: {
     learning_rate: payload.learningRate ?? null,
     run_name: payload.runName ?? "",
     activate: payload.activate ?? false,
+  });
+  return response.data;
+}
+
+export async function runSystemPipeline(payload?: {
+  refreshAccepted?: boolean;
+  refreshGraph?: boolean;
+  syncNeo4j?: boolean;
+  startNerTraining?: boolean;
+  startRelationTraining?: boolean;
+  trainingDatasetSource?: "baseline" | "merged";
+  trainingEpochs?: number;
+  trainingBatchSize?: number;
+  trainingLearningRate?: number | null;
+  activateTraining?: boolean;
+}) {
+  const response = await apiClient.post<SystemPipelineRunResponse>("/model/pipeline/run/", {
+    refresh_accepted: payload?.refreshAccepted ?? true,
+    refresh_graph: payload?.refreshGraph ?? true,
+    sync_neo4j: payload?.syncNeo4j ?? false,
+    start_ner_training: payload?.startNerTraining ?? false,
+    start_relation_training: payload?.startRelationTraining ?? false,
+    training_dataset_source: payload?.trainingDatasetSource ?? "merged",
+    training_epochs: payload?.trainingEpochs ?? 3,
+    training_batch_size: payload?.trainingBatchSize ?? 4,
+    training_learning_rate: payload?.trainingLearningRate ?? null,
+    activate_training: payload?.activateTraining ?? false,
   });
   return response.data;
 }

@@ -216,6 +216,71 @@ class ModelingApiTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
 
+    @patch("modeling.views.run_system_pipeline")
+    def test_system_pipeline_run_endpoint(self, run_pipeline_mock):
+        run_pipeline_mock.return_value = {
+            "refresh_accepted": True,
+            "refresh_graph": True,
+            "sync_neo4j": False,
+            "training_jobs_started": [],
+            "training_jobs_status": {"running_count": 0, "jobs": []},
+            "model_summary": {"ner": {}, "relation": {}},
+        }
+
+        response = self.client.post(
+            "/api/v1/model/pipeline/run/",
+            {
+                "refresh_accepted": True,
+                "refresh_graph": True,
+                "sync_neo4j": False,
+                "start_ner_training": False,
+                "start_relation_training": False,
+                "training_dataset_source": "merged",
+                "training_epochs": 3,
+                "training_batch_size": 4,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["refresh_accepted"])
+        run_pipeline_mock.assert_called_once()
+        kwargs = run_pipeline_mock.call_args.kwargs
+        self.assertTrue(kwargs["refresh_accepted"])
+        self.assertTrue(kwargs["refresh_graph"])
+        self.assertFalse(kwargs["sync_neo4j"])
+
+    @patch("modeling.views.run_system_pipeline")
+    def test_system_pipeline_run_endpoint_rejects_invalid_numeric_fields(self, run_pipeline_mock):
+        response = self.client.post(
+            "/api/v1/model/pipeline/run/",
+            {
+                "training_epochs": "abc",
+                "training_batch_size": 4,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        run_pipeline_mock.assert_not_called()
+
+    @patch("modeling.views.run_system_pipeline")
+    def test_system_pipeline_run_endpoint_propagates_value_error(self, run_pipeline_mock):
+        run_pipeline_mock.side_effect = ValueError("For memory safety, start at most one training task per pipeline run.")
+
+        response = self.client.post(
+            "/api/v1/model/pipeline/run/",
+            {
+                "start_ner_training": True,
+                "start_relation_training": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("memory safety", response.json()["detail"])
+
 
 class RelationConstraintTests(TestCase):
     def test_constraint_rewrites_incompatible_top_label_for_syndrome_formula_pair(self):

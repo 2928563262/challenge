@@ -3,7 +3,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .services import (
+    add_manual_relation_suppress,
+    add_manual_relation_upsert,
     activate_graph_version,
+    delete_manual_relation,
     GraphDataUnavailableError,
     GraphSyncError,
     build_entity_pathways,
@@ -12,6 +15,7 @@ from .services import (
     get_graph_registry_status,
     get_graph_sync_status,
     get_entity_detail,
+    list_manual_relations,
     run_neo4j_sync,
     run_reviewed_graph_refresh,
     search_entities,
@@ -82,6 +86,70 @@ class GraphNeo4jSyncView(APIView):
             return Response({"sync": run_neo4j_sync(), "status": get_graph_sync_status()})
         except GraphSyncError as exc:
             return Response({"detail": str(exc), "status": get_graph_sync_status()}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class GraphManualRelationListCreateView(APIView):
+    def get(self, request):
+        graph_id = str(request.query_params.get("graph_id") or "").strip() or None
+        return Response(list_manual_relations(graph_id=graph_id))
+
+    def post(self, request):
+        action = str(request.data.get("action") or "upsert").strip().lower()
+        start_id = str(request.data.get("start_id") or "").strip()
+        end_id = str(request.data.get("end_id") or "").strip()
+        relation_type = str(request.data.get("relation_type") or "").strip().upper()
+        example_text = str(request.data.get("example_text") or "").strip()
+        evidence_count = request.data.get("evidence_count", 1)
+        record_ids = request.data.get("record_ids")
+
+        if not start_id or not end_id or not relation_type:
+            return Response(
+                {"detail": "start_id, end_id and relation_type are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if record_ids is not None and not isinstance(record_ids, list):
+            return Response({"detail": "record_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            evidence_count = int(evidence_count)
+        except (TypeError, ValueError):
+            return Response({"detail": "evidence_count must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            if action == "suppress":
+                record = add_manual_relation_suppress(
+                    start_id=start_id,
+                    end_id=end_id,
+                    relation_type=relation_type,
+                    example_text=example_text,
+                )
+            elif action == "upsert":
+                record = add_manual_relation_upsert(
+                    start_id=start_id,
+                    end_id=end_id,
+                    relation_type=relation_type,
+                    example_text=example_text,
+                    evidence_count=evidence_count,
+                    record_ids=[str(item) for item in (record_ids or [])],
+                )
+            else:
+                return Response({"detail": "action must be upsert or suppress."}, status=status.HTTP_400_BAD_REQUEST)
+        except KeyError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except GraphDataUnavailableError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response({"record": record, "manual_relations": list_manual_relations()}, status=status.HTTP_201_CREATED)
+
+
+class GraphManualRelationDeleteView(APIView):
+    def delete(self, request, override_id: str):
+        try:
+            record = delete_manual_relation(override_id)
+        except KeyError:
+            return Response({"detail": "manual relation override not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"record": record, "manual_relations": list_manual_relations()})
 
 
 class GraphShowcaseView(APIView):

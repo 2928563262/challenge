@@ -3,10 +3,12 @@
 import csv
 import json
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 import os
+from uuid import uuid4
 
 from django.conf import settings
 
@@ -16,6 +18,15 @@ GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph"
 DEFAULT_REVIEWED_GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph-reviewed"
 GRAPH_SYNC_DIR = Path(settings.DATA_DIR) / "processed" / "graph-sync"
 NEO4J_SYNC_REPORT_PATH = GRAPH_SYNC_DIR / "neo4j_sync_report.json"
+DEFAULT_MANUAL_RELATIONS_PATH = Path(settings.DATA_DIR) / "processed" / "graph" / "manual_relation_overrides.json"
+
+RELATION_TYPE_PAIR_RULES = {
+    "SYNDROME_HAS_SYMPTOM": ("SYNDROME", "SYMPTOM"),
+    "SYNDROME_TO_FORMULA": ("SYNDROME", "FORMULA"),
+    "SYNDROME_TO_THERAPY": ("SYNDROME", "THERAPY"),
+    "FORMULA_CONTAINS_HERB": ("FORMULA", "HERB"),
+    "FORMULA_HAS_ADMINISTRATION": ("FORMULA", "ADMINISTRATION"),
+}
 
 SHOWCASE_CASES = [
     {
@@ -105,6 +116,223 @@ def activate_graph_version(graph_id: str) -> dict[str, Any]:
     return activate_graph(graph_id)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _manual_relations_path() -> Path:
+    configured = os.getenv("GRAPH_MANUAL_RELATIONS_PATH")
+    if configured:
+        return Path(configured)
+    return DEFAULT_MANUAL_RELATIONS_PATH
+
+
+def _load_manual_relation_overrides() -> list[dict[str, Any]]:
+    path = _manual_relations_path()
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    records = payload.get("records")
+    if not isinstance(records, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").strip().lower()
+        relation_type = str(item.get("relation_type") or "").strip().upper()
+        start_id = str(item.get("start_id") or "").strip()
+        end_id = str(item.get("end_id") or "").strip()
+        if action not in {"upsert", "suppress"}:
+            continue
+        if not relation_type or not start_id or not end_id:
+            continue
+        normalized.append(
+            {
+                "id": str(item.get("id") or f"manual-{uuid4().hex[:12]}"),
+                "graph_id": str(item.get("graph_id") or "").strip(),
+                "action": action,
+                "relation_type": relation_type,
+                "start_id": start_id,
+                "end_id": end_id,
+                "evidence_count": int(item.get("evidence_count") or 1),
+                "record_ids": [str(value) for value in item.get("record_ids", []) if str(value).strip()],
+                "example_text": str(item.get("example_text") or ""),
+                "created_at": str(item.get("created_at") or ""),
+                "updated_at": str(item.get("updated_at") or ""),
+            }
+        )
+    return normalized
+
+
+def _save_manual_relation_overrides(records: list[dict[str, Any]]) -> None:
+    path = _manual_relations_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"records": records}
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def list_manual_relations(graph_id: str | None = None) -> dict[str, Any]:
+    records = _load_manual_relation_overrides()
+    active_graph_id = str(get_active_graph_record().get("id") or "")
+    target_graph_id = graph_id or active_graph_id
+    if target_graph_id:
+        filtered = [item for item in records if str(item.get("graph_id") or "") in {"", target_graph_id}]
+    else:
+        filtered = records
+    filtered.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
+    return {
+        "path": str(_manual_relations_path()),
+        "total": len(filtered),
+        "records": filtered,
+    }
+
+
+def _resolve_manual_relation_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sorted_records = sorted(
+        records,
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+    )
+    final_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in sorted_records:
+        relation_key = (
+            str(item.get("start_id") or ""),
+            str(item.get("end_id") or ""),
+            str(item.get("relation_type") or ""),
+        )
+        if not all(relation_key):
+            continue
+        final_by_key[relation_key] = item
+    return sorted(
+        final_by_key.values(),
+        key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")),
+    )
+
+
+def _validate_relation_pair(start_entity: dict[str, Any], end_entity: dict[str, Any], relation_type: str) -> None:
+    expected = RELATION_TYPE_PAIR_RULES.get(relation_type)
+    if expected is None:
+        raise ValueError(f"Unsupported relation_type: {relation_type}")
+    actual = (str(start_entity.get("entity_type") or ""), str(end_entity.get("entity_type") or ""))
+    if actual != expected:
+        raise ValueError(
+            f"relation_type {relation_type} requires pair {expected[0]}->{expected[1]}, got {actual[0]}->{actual[1]}"
+        )
+
+
+def _build_manual_relation_record(
+    *,
+    graph_id: str,
+    action: str,
+    relation_type: str,
+    start_id: str,
+    end_id: str,
+    example_text: str = "",
+    evidence_count: int = 1,
+    record_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    now = _utc_now_iso()
+    return {
+        "id": f"manual-{uuid4().hex[:12]}",
+        "graph_id": graph_id,
+        "action": action,
+        "relation_type": relation_type,
+        "start_id": start_id,
+        "end_id": end_id,
+        "evidence_count": max(1, int(evidence_count)),
+        "record_ids": [str(item) for item in (record_ids or []) if str(item).strip()],
+        "example_text": example_text.strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def add_manual_relation_upsert(
+    *,
+    start_id: str,
+    end_id: str,
+    relation_type: str,
+    example_text: str = "",
+    evidence_count: int = 1,
+    record_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    data = load_graph_data()
+    start_entity = data["entities"].get(start_id)
+    end_entity = data["entities"].get(end_id)
+    if start_entity is None or end_entity is None:
+        raise KeyError("start_id or end_id does not exist in current graph.")
+
+    normalized_relation_type = relation_type.strip().upper()
+    _validate_relation_pair(start_entity, end_entity, normalized_relation_type)
+
+    active = get_active_graph_record()
+    record = _build_manual_relation_record(
+        graph_id=str(active.get("id") or ""),
+        action="upsert",
+        relation_type=normalized_relation_type,
+        start_id=start_id,
+        end_id=end_id,
+        example_text=example_text,
+        evidence_count=evidence_count,
+        record_ids=record_ids,
+    )
+    records = _load_manual_relation_overrides()
+    records.append(record)
+    _save_manual_relation_overrides(records)
+    load_graph_data.cache_clear()
+    return record
+
+
+def add_manual_relation_suppress(
+    *,
+    start_id: str,
+    end_id: str,
+    relation_type: str,
+    example_text: str = "",
+) -> dict[str, Any]:
+    data = load_graph_data()
+    start_entity = data["entities"].get(start_id)
+    end_entity = data["entities"].get(end_id)
+    if start_entity is None or end_entity is None:
+        raise KeyError("start_id or end_id does not exist in current graph.")
+
+    normalized_relation_type = relation_type.strip().upper()
+    _validate_relation_pair(start_entity, end_entity, normalized_relation_type)
+
+    active = get_active_graph_record()
+    record = _build_manual_relation_record(
+        graph_id=str(active.get("id") or ""),
+        action="suppress",
+        relation_type=normalized_relation_type,
+        start_id=start_id,
+        end_id=end_id,
+        example_text=example_text,
+        evidence_count=1,
+        record_ids=[],
+    )
+    records = _load_manual_relation_overrides()
+    records.append(record)
+    _save_manual_relation_overrides(records)
+    load_graph_data.cache_clear()
+    return record
+
+
+def delete_manual_relation(override_id: str) -> dict[str, Any]:
+    records = _load_manual_relation_overrides()
+    target = None
+    kept: list[dict[str, Any]] = []
+    for record in records:
+        if str(record.get("id") or "") == override_id:
+            target = record
+            continue
+        kept.append(record)
+    if target is None:
+        raise KeyError(override_id)
+    _save_manual_relation_overrides(kept)
+    load_graph_data.cache_clear()
+    return target
+
+
 def _write_neo4j_sync_report(payload: dict[str, Any]) -> None:
     GRAPH_SYNC_DIR.mkdir(parents=True, exist_ok=True)
     NEO4J_SYNC_REPORT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -134,6 +362,14 @@ def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
     password = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
     database = os.getenv("NEO4J_DATABASE", "neo4j")
     batch_size = int(os.getenv("NEO4J_BATCH_SIZE", "500"))
+    active_graph_id = str(active_graph.get("id") or "")
+    manual_records = _resolve_manual_relation_records(
+        [
+            item
+            for item in _load_manual_relation_overrides()
+            if str(item.get("graph_id") or "") in {"", active_graph_id}
+        ]
+    )
 
     try:
         summary = import_graph(
@@ -143,6 +379,7 @@ def run_neo4j_sync(graph_dir: Path | None = None) -> dict[str, Any]:
             password=password,
             database=database,
             batch_size=batch_size,
+            manual_overrides=manual_records,
         )
     except Exception as exc:  # pragma: no cover
         payload = {
@@ -245,6 +482,7 @@ def load_graph_data() -> dict[str, Any]:
             "text": row["text"],
         }
 
+    relation_map: dict[tuple[str, str, str], dict[str, Any]] = {}
     for row in relation_rows:
         relation = {
             "start_id": row[":START_ID(Entity-ID)"],
@@ -253,7 +491,43 @@ def load_graph_data() -> dict[str, Any]:
             "evidence_count": int(row["evidence_count:int"]),
             "record_ids": row["record_ids"].split("|") if row["record_ids"] else [],
             "example_text": row["example_text"],
+            "manual_override": False,
+            "manual_override_id": None,
         }
+        relation_key = (relation["start_id"], relation["end_id"], relation["relation_type"])
+        relation_map[relation_key] = relation
+
+    active_graph_id = str(active_graph.get("id") or "")
+    manual_records = [
+        item
+        for item in _load_manual_relation_overrides()
+        if str(item.get("graph_id") or "") in {"", active_graph_id}
+    ]
+    manual_records = _resolve_manual_relation_records(manual_records)
+
+    for item in manual_records:
+        relation_key = (
+            str(item.get("start_id") or ""),
+            str(item.get("end_id") or ""),
+            str(item.get("relation_type") or ""),
+        )
+        if item.get("action") == "suppress":
+            relation_map.pop(relation_key, None)
+            continue
+
+        if item.get("action") == "upsert":
+            relation_map[relation_key] = {
+                "start_id": relation_key[0],
+                "end_id": relation_key[1],
+                "relation_type": relation_key[2],
+                "evidence_count": int(item.get("evidence_count") or 1),
+                "record_ids": [str(value) for value in item.get("record_ids", []) if str(value).strip()],
+                "example_text": str(item.get("example_text") or ""),
+                "manual_override": True,
+                "manual_override_id": str(item.get("id") or ""),
+            }
+
+    for relation in relation_map.values():
         relation_type_breakdown[relation["relation_type"]] += 1
         outgoing_relations[relation["start_id"]].append(relation)
         incoming_relations[relation["end_id"]].append(relation)
@@ -338,6 +612,8 @@ def _relation_payload(relation: dict[str, Any], related_entity: dict[str, Any], 
         "evidence_count": relation["evidence_count"],
         "record_ids": relation["record_ids"],
         "example_text": relation["example_text"],
+        "manual_override": bool(relation.get("manual_override")),
+        "manual_override_id": relation.get("manual_override_id"),
         "related_entity": related_entity,
     }
 

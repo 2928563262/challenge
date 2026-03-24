@@ -410,6 +410,18 @@ button {
   color: #8c5e34;
 }
 
+.graph-manual-relation-panel {
+  margin-bottom: 12px;
+}
+
+.relation-item-actions {
+  margin-top: 8px;
+}
+
+.graph-override-list {
+  margin-top: 12px;
+}
+
 .relation-item span {
   display: block;
   font-size: 0.74rem;
@@ -1455,11 +1467,11 @@ button {
 }
 
 .annotation-edge-meta-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
 }
 
 .annotation-edge-entity-grid {
-  grid-template-columns: minmax(0, 1.45fr) minmax(160px, 0.75fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(140px, 0.75fr);
 }
 
 .annotation-position-grid {
@@ -1495,6 +1507,25 @@ button {
   color: #2f2218;
 }
 
+.annotation-edge-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.annotation-field {
+  display: grid;
+  gap: 6px;
+}
+
+.annotation-field span {
+  font-size: 0.78rem;
+  color: #6c553f;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .annotation-edit-card textarea {
   width: 100%;
   resize: vertical;
@@ -1526,30 +1557,13 @@ button {
   font-size: 0.9rem;
 }
 
-.annotation-payload-block {
-  margin-top: 18px;
-}
-
-.annotation-payload {
-  margin: 0;
-  max-height: 320px;
-  overflow: auto;
-  padding: 14px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.74);
-  border: 1px solid rgba(104, 76, 49, 0.12);
-  color: #5d4a38;
-  font-family: "Consolas", "SFMono-Regular", monospace;
-  font-size: 0.82rem;
-  line-height: 1.55;
-}
-
 @media (max-width: 1080px) {
   .annotation-layout {
     grid-template-columns: 1fr;
   }
 
   .annotation-node-grid,
+  .annotation-edge-topline,
   .annotation-edge-meta-grid,
   .annotation-edge-entity-grid,
   .annotation-position-grid {

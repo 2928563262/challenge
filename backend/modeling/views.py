@@ -14,6 +14,7 @@ from .services import (
     predict_ner,
     predict_relation,
     run_accepted_pipeline_refresh,
+    run_system_pipeline,
     run_training_job,
 )
 
@@ -170,3 +171,71 @@ class TrainingJobStartView(APIView):
             },
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class SystemPipelineRunView(APIView):
+    @staticmethod
+    def _parse_bool(value, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    def post(self, request):
+        refresh_accepted = self._parse_bool(request.data.get("refresh_accepted"), True)
+        refresh_graph = self._parse_bool(request.data.get("refresh_graph"), True)
+        sync_neo4j = self._parse_bool(request.data.get("sync_neo4j"), False)
+        start_ner_training = self._parse_bool(request.data.get("start_ner_training"), False)
+        start_relation_training = self._parse_bool(request.data.get("start_relation_training"), False)
+        activate_training = self._parse_bool(request.data.get("activate_training"), False)
+        training_dataset_source = str(request.data.get("training_dataset_source") or "merged").strip().lower()
+        training_epochs_raw = request.data.get("training_epochs", 3)
+        training_batch_size_raw = request.data.get("training_batch_size", 4)
+        training_learning_rate_raw = request.data.get("training_learning_rate")
+
+        try:
+            training_epochs = int(training_epochs_raw)
+            training_batch_size = int(training_batch_size_raw)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "training_epochs and training_batch_size must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        training_learning_rate = None
+        if training_learning_rate_raw not in ("", None):
+            try:
+                training_learning_rate = float(training_learning_rate_raw)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "training_learning_rate must be a number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            payload = run_system_pipeline(
+                refresh_accepted=refresh_accepted,
+                refresh_graph=refresh_graph,
+                sync_neo4j=sync_neo4j,
+                start_ner_training=start_ner_training,
+                start_relation_training=start_relation_training,
+                training_dataset_source=training_dataset_source,
+                training_epochs=training_epochs,
+                training_batch_size=training_batch_size,
+                training_learning_rate=training_learning_rate,
+                activate_training=activate_training,
+            )
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except RuntimeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        return Response(payload)

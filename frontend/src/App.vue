@@ -10,7 +10,7 @@ const { t } = useI18n();
       <div class="app-header-inner">
         <RouterLink class="brand-mark" to="/">
           <span class="brand-kicker">{{ t("nav.brandKicker") }}</span>
-          <strong>伤寒论知识图谱系统</strong>
+          <strong>{{ t("nav.brandTitle") }}</strong>
         </RouterLink>
 
         <nav class="main-nav">
