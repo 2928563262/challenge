@@ -12,6 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_DIR = PROJECT_ROOT / "backend"
 DATA_DIR = PROJECT_ROOT / "data"
 DEFAULT_OUTPUT_DIR = DATA_DIR / "processed" / "annotation"
+GOLD_JSONL_NAME = "gold_standard_candidates.jsonl"
+GOLD_REPORT_NAME = "gold_standard_candidates_report.json"
 ALLOWED_ENTITY_TYPES = {"SYNDROME", "SYMPTOM", "FORMULA", "HERB", "THERAPY", "ADMINISTRATION"}
 ALLOWED_RELATION_TYPES = {
     "SYNDROME_HAS_SYMPTOM",
@@ -115,6 +117,8 @@ def export_accepted_candidates(output_dir: Path, limit: int | None = None) -> di
     output_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "accepted_candidates.jsonl"
     report_path = output_dir / "accepted_candidates_report.json"
+    gold_jsonl_path = output_dir / GOLD_JSONL_NAME
+    gold_report_path = output_dir / GOLD_REPORT_NAME
 
     entity_counter: Counter[str] = Counter()
     relation_counter: Counter[str] = Counter()
@@ -126,6 +130,7 @@ def export_accepted_candidates(output_dir: Path, limit: int | None = None) -> di
         "skipped_relations": 0,
     }
 
+    exported_rows: list[dict[str, Any]] = []
     with jsonl_path.open("w", encoding="utf-8") as handle:
         for candidate in queryset:
             payload = candidate.session_payload if isinstance(candidate.session_payload, dict) else {}
@@ -144,6 +149,8 @@ def export_accepted_candidates(output_dir: Path, limit: int | None = None) -> di
                 "record_id": candidate.record_id,
                 "source_text": candidate.source_text,
                 "status": candidate.status,
+                "label_tier": "gold_standard",
+                "review_source": "annotation_review_accepted",
                 "source_page": candidate.source_page,
                 "created_at": candidate.created_at.isoformat(),
                 "updated_at": candidate.updated_at.isoformat(),
@@ -153,15 +160,23 @@ def export_accepted_candidates(output_dir: Path, limit: int | None = None) -> di
                 "entities": nodes,
                 "relations": relations,
             }
+            exported_rows.append(row)
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    # Mirror as dedicated gold-standard file for downstream training clarity.
+    with gold_jsonl_path.open("w", encoding="utf-8") as handle:
+        for row in exported_rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     report = {
         "input": {
             "status": "accepted",
             "limit": limit,
+            "accepted_as_gold_standard": True,
         },
         "output": {
             "jsonl_path": str(jsonl_path),
+            "gold_jsonl_path": str(gold_jsonl_path),
         },
         "stats": {
             **stats,
@@ -170,6 +185,7 @@ def export_accepted_candidates(output_dir: Path, limit: int | None = None) -> di
         },
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    gold_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
 

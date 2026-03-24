@@ -1,0 +1,14 @@
+{
+  "input": {
+    "path": "D:\\code\\python\\challenge\\data\\annotation\\cleaned_silver_corpus.jsonl",
+    "manual_batch": "2026-03-24-b8-15"
+  },
+  "output": {
+    "path": "D:\\code\\python\\challenge\\data\\annotation\\gold_subset.jsonl"
+  },
+  "stats": {
+    "record_count": 8,
+    "entity_count": 56,
+    "relation_count": 44
+  }
+}

@@ -17,8 +17,10 @@ DEFAULT_RELATION_MODEL_DIR = settings.PROJECT_ROOT / "models" / "baseline" / "re
 DEFAULT_NER_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "ner" / "dataset_manifest.json"
 DEFAULT_RELATION_DATASET_MANIFEST = settings.DATA_DIR / "processed" / "relation" / "dataset_manifest.json"
 DEFAULT_ACCEPTED_DATASET_DIR = settings.DATA_DIR / "processed" / "annotation"
-DEFAULT_ACCEPTED_JSONL_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates.jsonl"
-DEFAULT_ACCEPTED_REPORT_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates_report.json"
+DEFAULT_ACCEPTED_JSONL_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "gold_standard_candidates.jsonl"
+DEFAULT_ACCEPTED_REPORT_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "gold_standard_candidates_report.json"
+LEGACY_ACCEPTED_JSONL_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates.jsonl"
+LEGACY_ACCEPTED_REPORT_PATH = DEFAULT_ACCEPTED_DATASET_DIR / "accepted_candidates_report.json"
 DEFAULT_INCREMENTAL_DIR = settings.DATA_DIR / "processed" / "annotation" / "incremental"
 DEFAULT_INCREMENTAL_REPORT_PATH = DEFAULT_INCREMENTAL_DIR / "incremental_dataset_report.json"
 DEFAULT_MERGED_ROOT = settings.DATA_DIR / "processed" / "merged"
@@ -133,7 +135,8 @@ def _artifact_commands() -> dict[str, str]:
 
 
 def get_accepted_pipeline_status() -> dict[str, Any]:
-    accepted_report = _read_report(DEFAULT_ACCEPTED_REPORT_PATH)
+    accepted_report_path = DEFAULT_ACCEPTED_REPORT_PATH if DEFAULT_ACCEPTED_REPORT_PATH.exists() else LEGACY_ACCEPTED_REPORT_PATH
+    accepted_report = _read_report(accepted_report_path)
     incremental_report = _read_report(DEFAULT_INCREMENTAL_REPORT_PATH)
     merge_report = _read_report(DEFAULT_MERGED_REPORT_PATH)
     merged_ner_manifest = _read_report(DEFAULT_MERGED_NER_MANIFEST)

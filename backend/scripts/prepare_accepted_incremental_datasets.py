@@ -8,7 +8,8 @@ from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
-DEFAULT_ACCEPTED_PATH = DATA_DIR / "processed" / "annotation" / "accepted_candidates.jsonl"
+DEFAULT_ACCEPTED_PATH = DATA_DIR / "processed" / "annotation" / "gold_standard_candidates.jsonl"
+LEGACY_ACCEPTED_PATH = DATA_DIR / "processed" / "annotation" / "accepted_candidates.jsonl"
 DEFAULT_OUTPUT_DIR = DATA_DIR / "processed" / "annotation" / "incremental"
 
 ENTITY_TYPES = [
@@ -179,7 +180,7 @@ def build_ner_examples(records: list[dict[str, Any]]) -> tuple[list[dict[str, An
                 "tokens": list(text),
                 "tags": tags,
                 "tag_ids": [label_to_id[tag] for tag in tags],
-                "source": "accepted",
+                "source": "gold_standard",
                 "meta": {
                     "status": record.get("status"),
                     "source_page": record.get("source_page"),
@@ -247,7 +248,7 @@ def build_relation_examples(records: list[dict[str, Any]]) -> tuple[list[dict[st
                 "pair_type": f"{actual_pair[0]}->{actual_pair[1]}",
                 "head": canonical_head,
                 "tail": canonical_tail,
-                "source": "accepted",
+                "source": "gold_standard",
                 "meta": {
                     "status": record.get("status"),
                     "source_page": record.get("source_page"),
@@ -277,6 +278,8 @@ def build_relation_examples(records: list[dict[str, Any]]) -> tuple[list[dict[st
 
 
 def prepare_incremental_datasets(accepted_path: Path, output_dir: Path) -> dict[str, Any]:
+    if not accepted_path.exists() and accepted_path == DEFAULT_ACCEPTED_PATH and LEGACY_ACCEPTED_PATH.exists():
+        accepted_path = LEGACY_ACCEPTED_PATH
     records = load_jsonl(accepted_path)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -293,6 +296,7 @@ def prepare_incremental_datasets(accepted_path: Path, output_dir: Path) -> dict[
     report = {
         "input": {
             "accepted_path": str(accepted_path),
+            "dataset_tier": "gold_standard",
         },
         "output": {
             "ner_incremental_path": str(ner_path),
@@ -309,7 +313,7 @@ def prepare_incremental_datasets(accepted_path: Path, output_dir: Path) -> dict[
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Prepare incremental NER/RE datasets from accepted annotation candidates.")
+    parser = argparse.ArgumentParser(description="Prepare incremental NER/RE datasets from reviewed gold-standard candidates.")
     parser.add_argument("--accepted", type=Path, default=DEFAULT_ACCEPTED_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
