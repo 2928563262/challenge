@@ -516,11 +516,21 @@ async function loadData() {
 }
 
 onMounted(async () => {
-  await loadData();
-  setTimeout(() => {
-    initCharts();
-    window.addEventListener("resize", resizeCharts);
-  }, 100);
+  try {
+    await loadData();
+    setTimeout(() => {
+      try {
+        initCharts();
+      } catch (e) {
+        console.error("initCharts failed:", e);
+        errorMessage.value = "图表初始化失败: " + e;
+      }
+      window.addEventListener("resize", resizeCharts);
+    }, 100);
+  } catch (e) {
+    console.error("StatisticsView onMounted failed:", e);
+    errorMessage.value = "页面加载失败: " + e;
+  }
 });
 
 onUnmounted(() => {
