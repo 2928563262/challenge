@@ -60,13 +60,10 @@ interface SessionGraphEdge {
 const route = useRoute();
 const router = useRouter();
 const { t } = useI18n();
+const translate = t as unknown as (key: string, params?: Record<string, unknown>) => string;
 
 function tf(key: string, params: Record<string, string | number>) {
-  let message = t(key);
-  for (const [name, value] of Object.entries(params)) {
-    message = message.split(`{${name}}`).join(String(value));
-  }
-  return message;
+  return String(translate(key, params));
 }
 
 const graphSummary = ref<GraphSummary | null>(null);
@@ -403,6 +400,16 @@ function formatEntryType(entryType: string | null) {
 
 function formatPathwayType(pathType: string) {
   return pathwayTypeLabels[pathType] ? t(pathwayTypeLabels[pathType]) : pathType;
+}
+
+function toDisplayCount(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toDisplayText(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text || t("common.unknown");
 }
 
 function predictedEntityKey(entity: NerPredictionEntity) {
@@ -1679,7 +1686,15 @@ watch(
               <strong>{{ entity.name }}</strong>
               <span>{{ formatEntityType(entity.entity_type) }}</span>
             </div>
-            <p>{{ tf("explorer.entityCardSummary", { mentionCount: entity.mention_count, recordCount: entity.record_count, firstRecordId: entity.first_record_id }) }}</p>
+            <p>
+              {{
+                tf("explorer.entityCardSummary", {
+                  mentionCount: toDisplayCount(entity.mention_count),
+                  recordCount: toDisplayCount(entity.record_count),
+                  firstRecordId: toDisplayText(entity.first_record_id),
+                })
+              }}
+            </p>
           </button>
         </div>
       </article>

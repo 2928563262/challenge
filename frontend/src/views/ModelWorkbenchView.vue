@@ -19,13 +19,10 @@ import type {
 } from "../types/api";
 
 const { t } = useI18n();
+const translate = t as unknown as (key: string, params?: Record<string, unknown>) => string;
 
 function tf(key: string, params: Record<string, string | number>) {
-  let message = t(key);
-  for (const [name, value] of Object.entries(params)) {
-    message = message.split(`{${name}}`).join(String(value));
-  }
-  return message;
+  return String(translate(key, params));
 }
 const modelSummary = ref<ModelSummary | null>(null);
 const prediction = ref<NerPrediction | null>(null);

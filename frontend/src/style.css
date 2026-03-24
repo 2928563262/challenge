@@ -599,7 +599,7 @@ button {
 
 .showcase-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
 }
 
@@ -626,9 +626,17 @@ button {
   align-items: flex-start;
 }
 
+.showcase-case-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
 .showcase-case-head h3 {
   margin: 0;
   font-size: 1.18rem;
+  line-height: 1.35;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 
 .showcase-case-head > span {

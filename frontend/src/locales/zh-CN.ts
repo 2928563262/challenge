@@ -101,7 +101,7 @@ export const zhCN = {
       syncKicker: "图谱同步",
       syncTitle: "Neo4j 同步状态",
       showcaseKicker: "典型案例",
-      showcaseTitle: "答辩演示入口",
+      showcaseTitle: "图谱案例入口",
       topEntityKicker: "高频节点",
       topEntityTitle: "图谱核心实体",
       sampleKicker: "文本样本",

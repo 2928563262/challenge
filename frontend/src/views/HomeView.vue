@@ -26,13 +26,10 @@ import type {
 
 const router = useRouter();
 const { t } = useI18n();
+const translate = t as unknown as (key: string, params?: Record<string, unknown>) => string;
 
 function tf(key: string, params: Record<string, string | number>) {
-  let message = t(key);
-  for (const [name, value] of Object.entries(params)) {
-    message = message.split(`{${name}}`).join(String(value));
-  }
-  return message;
+  return String(translate(key, params));
 }
 
 const overview = ref<CorpusOverview | null>(null);
@@ -139,6 +136,11 @@ const graphSyncCard = computed(() => {
 
 const topEntities = computed(() => graphSummary.value?.top_entities ?? []);
 const formulaSamples = computed(() => overview.value?.formula_samples.slice(0, 6) ?? []);
+
+function getMentionCount(value: unknown) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 function formatEntityType(entityTypeName: string) {
   return formatEntityTypeLabel(entityTypeName);
@@ -385,7 +387,6 @@ onMounted(async () => {
         <div class="panel-header compact-header">
           <div>
             <p class="panel-kicker">{{ t("home.panels.showcaseKicker") }}</p>
-            <h2>{{ t("home.panels.showcaseTitle") }}</h2>
           </div>
           <RouterLink to="/explore" class="ghost-link">{{ t("home.actions.viewGraphDetail") }}</RouterLink>
         </div>
@@ -422,13 +423,13 @@ onMounted(async () => {
           <button v-for="entity in topEntities" :key="entity.entity_id" class="top-entity-card" type="button" @click="openExplorer(entity)">
             <span>{{ formatEntityType(entity.entity_type) }}</span>
             <strong>{{ entity.name }}</strong>
-            <p>{{ tf("home.entityMentionCount", { count: entity.mention_count }) }}</p>
+            <p>{{ tf("home.entityMentionCount", { count: getMentionCount(entity.mention_count) }) }}</p>
           </button>
         </div>
       </article>
     </section>
 
-    <section class="content-grid dashboard-grid secondary-grid">
+    <section class="content-grid">
       <article class="panel">
         <div class="panel-header compact-header">
           <div>
@@ -451,29 +452,6 @@ onMounted(async () => {
             </div>
             <p>{{ entry.text }}</p>
           </article>
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-header compact-header">
-          <div>
-            <p class="panel-kicker">{{ t("home.panels.nextStepKicker") }}</p>
-            <h2>{{ t("home.panels.nextStepTitle") }}</h2>
-          </div>
-        </div>
-        <div class="narrative-list">
-          <div class="narrative-item">
-            <strong>{{ t("home.nextSteps.step1Title") }}</strong>
-            <p>{{ t("home.nextSteps.step1Desc") }}</p>
-          </div>
-          <div class="narrative-item">
-            <strong>{{ t("home.nextSteps.step2Title") }}</strong>
-            <p>{{ t("home.nextSteps.step2Desc") }}</p>
-          </div>
-          <div class="narrative-item">
-            <strong>{{ t("home.nextSteps.step3Title") }}</strong>
-            <p>{{ t("home.nextSteps.step3Desc") }}</p>
-          </div>
         </div>
       </article>
     </section>
