@@ -441,6 +441,19 @@ button {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.text-preview-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(104, 76, 49, 0.12);
+  border-radius: 16px;
+  cursor: pointer;
+}
+
+.text-preview-item.active {
+  border-color: rgba(71, 95, 78, 0.38);
+  background: linear-gradient(180deg, rgba(239, 245, 238, 0.95), rgba(255, 250, 243, 0.9));
+}
+
 .evidence-meta,
 .result-meta {
   display: flex;
@@ -788,6 +801,40 @@ button {
   align-items: center;
 }
 
+.graph-version-strip {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.graph-version-strip label {
+  display: grid;
+  gap: 6px;
+}
+
+.graph-version-strip span {
+  font-size: 0.78rem;
+  color: #6c553f;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-version-strip select {
+  border: 1px solid rgba(111, 74, 46, 0.18);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.78);
+  font: inherit;
+  color: #2f2218;
+}
+
+.graph-version-strip .status-text {
+  margin: 0;
+  align-self: center;
+}
+
 .quick-stat-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -847,6 +894,7 @@ button {
 @media (max-width: 1080px) {
   .dashboard-grid,
   .compact-showcase-list,
+  .graph-version-strip,
   .quick-stat-row {
     grid-template-columns: 1fr;
   }
@@ -1566,7 +1614,8 @@ button {
   .annotation-edge-topline,
   .annotation-edge-meta-grid,
   .annotation-edge-entity-grid,
-  .annotation-position-grid {
+  .annotation-position-grid,
+  .annotation-search-row {
     grid-template-columns: 1fr;
   }
 
@@ -1578,6 +1627,54 @@ button {
 
 .annotation-filter-group {
   margin-bottom: 14px;
+}
+
+.annotation-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.annotation-search-row input {
+  border: 1px solid rgba(111, 74, 46, 0.18);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.8);
+  font: inherit;
+  color: #2f2218;
+}
+
+.annotation-batch-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.annotation-batch-toolbar span {
+  color: #6c553f;
+  font-size: 0.86rem;
+}
+
+.annotation-record-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #7d4f2b;
+}
+
+.annotation-pagination-row {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.annotation-pagination-row span {
+  color: #6c553f;
+  font-size: 0.86rem;
 }
 
 .registry-list {

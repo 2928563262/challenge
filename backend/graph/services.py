@@ -13,6 +13,10 @@ from uuid import uuid4
 from django.conf import settings
 
 from .registry import activate_graph, get_active_graph, get_registry_path, list_graph_versions
+try:
+    from neo4j import GraphDatabase
+except Exception:  # pragma: no cover
+    GraphDatabase = None
 
 GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph"
 DEFAULT_REVIEWED_GRAPH_DIR = Path(settings.DATA_DIR) / "processed" / "graph-reviewed"
@@ -434,8 +438,103 @@ def _read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _read_graph_query_source() -> str:
+    raw = str(os.getenv("GRAPH_QUERY_SOURCE", "csv") or "csv").strip().lower()
+    if raw not in {"csv", "neo4j"}:
+        return "csv"
+    return raw
+
+
+def _read_graph_query_fallback_to_csv() -> bool:
+    raw = str(os.getenv("GRAPH_QUERY_FALLBACK_TO_CSV", "true") or "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 @lru_cache(maxsize=1)
-def load_graph_data() -> dict[str, Any]:
+def _get_neo4j_driver():
+    if GraphDatabase is None:
+        raise GraphDataUnavailableError("neo4j package is not installed in current environment.")
+    uri = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+    username = os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "neo4jpassword")
+    return GraphDatabase.driver(uri, auth=(username, password))
+
+
+def _run_neo4j_read(query: str, **params: Any) -> list[dict[str, Any]]:
+    database = os.getenv("NEO4J_DATABASE", "neo4j")
+    driver = _get_neo4j_driver()
+    with driver.session(database=database) as session:
+        result = session.run(query, params)
+        return [record.data() for record in result]
+
+
+def _split_entry_types(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item).strip()]
+    text = str(value).strip()
+    if not text:
+        return []
+    return [item for item in text.split("|") if item]
+
+
+def _base_summary_from_graph_dir(paths: dict[str, Path], clauses: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    summary_path = paths["summary"]
+    if summary_path.exists():
+        return json.loads(summary_path.read_text(encoding="utf-8"))
+    return {
+        "input_record_count": len({str(item["record_id"]) for item in clauses.values()}),
+        "entity_node_count": 0,
+        "clause_node_count": len(clauses),
+        "entity_relation_count": 0,
+        "clause_mention_count": 0,
+    }
+
+
+def _finalize_graph_payload(
+    *,
+    summary: dict[str, Any],
+    active_graph: dict[str, Any],
+    entities: dict[str, dict[str, Any]],
+    clauses: dict[str, dict[str, Any]],
+    outgoing_relations: dict[str, list[dict[str, Any]]],
+    incoming_relations: dict[str, list[dict[str, Any]]],
+    mentions_by_entity: dict[str, list[dict[str, Any]]],
+    entity_type_breakdown: Counter[str],
+    relation_type_breakdown: Counter[str],
+    query_source: str,
+) -> dict[str, Any]:
+    for relation_list in outgoing_relations.values():
+        relation_list.sort(key=lambda item: (-int(item["evidence_count"]), str(item["relation_type"]), str(item["end_id"])))
+    for relation_list in incoming_relations.values():
+        relation_list.sort(key=lambda item: (-int(item["evidence_count"]), str(item["relation_type"]), str(item["start_id"])))
+    for mention_list in mentions_by_entity.values():
+        mention_list.sort(key=lambda item: (str(item["record_id"]), int(item["start"]), int(item["end"])))
+
+    summary["entity_node_count"] = len(entities)
+    summary["clause_node_count"] = len(clauses)
+    summary["entity_relation_count"] = int(sum(len(rows) for rows in outgoing_relations.values()))
+    summary["clause_mention_count"] = int(sum(len(rows) for rows in mentions_by_entity.values()))
+    summary["entity_type_breakdown"] = dict(sorted(entity_type_breakdown.items()))
+    summary["relation_type_breakdown"] = dict(sorted(relation_type_breakdown.items()))
+    summary["graph_version"] = active_graph
+    summary["query_source"] = query_source
+
+    if "input_record_count" not in summary:
+        summary["input_record_count"] = len({str(item["record_id"]) for item in clauses.values()})
+
+    return {
+        "summary": summary,
+        "entities": entities,
+        "clauses": clauses,
+        "outgoing_relations": outgoing_relations,
+        "incoming_relations": incoming_relations,
+        "mentions_by_entity": mentions_by_entity,
+    }
+
+
+def _load_graph_data_from_csv() -> dict[str, Any]:
     active_graph = get_active_graph_record()
     graph_dir = Path(str(active_graph.get("output_dir") or GRAPH_DIR))
     paths = _graph_paths(graph_dir)
@@ -549,25 +648,184 @@ def load_graph_data() -> dict[str, Any]:
         }
         mentions_by_entity[entity_id].append(mention)
 
-    for relation_list in outgoing_relations.values():
-        relation_list.sort(key=lambda item: (-item["evidence_count"], item["relation_type"], item["end_id"]))
-    for relation_list in incoming_relations.values():
-        relation_list.sort(key=lambda item: (-item["evidence_count"], item["relation_type"], item["start_id"]))
-    for mention_list in mentions_by_entity.values():
-        mention_list.sort(key=lambda item: (item["record_id"], item["start"], item["end"]))
+    return _finalize_graph_payload(
+        summary=summary,
+        active_graph=active_graph,
+        entities=entities,
+        clauses=clauses,
+        outgoing_relations=outgoing_relations,
+        incoming_relations=incoming_relations,
+        mentions_by_entity=mentions_by_entity,
+        entity_type_breakdown=entity_type_breakdown,
+        relation_type_breakdown=relation_type_breakdown,
+        query_source="csv",
+    )
 
-    summary["entity_type_breakdown"] = dict(sorted(entity_type_breakdown.items()))
-    summary["relation_type_breakdown"] = dict(sorted(relation_type_breakdown.items()))
-    summary["graph_version"] = active_graph
 
-    return {
-        "summary": summary,
-        "entities": entities,
-        "clauses": clauses,
-        "outgoing_relations": outgoing_relations,
-        "incoming_relations": incoming_relations,
-        "mentions_by_entity": mentions_by_entity,
-    }
+def _load_graph_data_from_neo4j() -> dict[str, Any]:
+    active_graph = get_active_graph_record()
+    graph_dir = Path(str(active_graph.get("output_dir") or GRAPH_DIR))
+    paths = _graph_paths(graph_dir)
+
+    entities: dict[str, dict[str, Any]] = {}
+    clauses: dict[str, dict[str, Any]] = {}
+    outgoing_relations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    incoming_relations: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    mentions_by_entity: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    entity_type_breakdown: Counter[str] = Counter()
+    relation_type_breakdown: Counter[str] = Counter()
+
+    entity_rows = _run_neo4j_read(
+        """
+        MATCH (e:Entity)
+        RETURN
+          e.entity_id AS entity_id,
+          e.entity_type AS entity_type,
+          e.name AS name,
+          coalesce(e.mention_count, 0) AS mention_count,
+          coalesce(e.record_count, 0) AS record_count,
+          coalesce(e.first_record_id, "") AS first_record_id,
+          coalesce(e.entry_types, []) AS entry_types,
+          labels(e) AS labels
+        """
+    )
+    for row in entity_rows:
+        entity_id = str(row.get("entity_id") or "")
+        if not entity_id:
+            continue
+        entity_type = str(row.get("entity_type") or "")
+        entity = {
+            "entity_id": entity_id,
+            "entity_type": entity_type,
+            "name": str(row.get("name") or ""),
+            "mention_count": int(row.get("mention_count") or 0),
+            "record_count": int(row.get("record_count") or 0),
+            "first_record_id": str(row.get("first_record_id") or ""),
+            "entry_types": _split_entry_types(row.get("entry_types")),
+            "labels": [str(item) for item in (row.get("labels") or []) if str(item).strip()],
+        }
+        entities[entity_id] = entity
+        if entity_type:
+            entity_type_breakdown[entity_type] += 1
+
+    clause_rows = _run_neo4j_read(
+        """
+        MATCH (c:Clause)
+        RETURN
+          c.clause_id AS clause_id,
+          coalesce(c.record_id, "") AS record_id,
+          coalesce(c.line_number, 0) AS line_number,
+          coalesce(c.entry_type, "") AS entry_type,
+          coalesce(c.text, "") AS text
+        """
+    )
+    for row in clause_rows:
+        clause_id = str(row.get("clause_id") or "")
+        if not clause_id:
+            continue
+        clauses[clause_id] = {
+            "clause_id": clause_id,
+            "record_id": str(row.get("record_id") or ""),
+            "line_number": int(row.get("line_number") or 0),
+            "entry_type": str(row.get("entry_type") or ""),
+            "text": str(row.get("text") or ""),
+        }
+
+    relation_rows = _run_neo4j_read(
+        """
+        MATCH (source:Entity)-[r]->(target:Entity)
+        WHERE type(r) IN $relation_types
+        RETURN
+          source.entity_id AS start_id,
+          target.entity_id AS end_id,
+          type(r) AS relation_type,
+          coalesce(r.evidence_count, 1) AS evidence_count,
+          coalesce(r.record_ids, []) AS record_ids,
+          coalesce(r.example_text, "") AS example_text,
+          coalesce(r.manual_override, false) AS manual_override,
+          coalesce(r.manual_override_id, "") AS manual_override_id
+        """,
+        relation_types=list(RELATION_TYPE_PAIR_RULES.keys()),
+    )
+    for row in relation_rows:
+        start_id = str(row.get("start_id") or "")
+        end_id = str(row.get("end_id") or "")
+        relation_type = str(row.get("relation_type") or "")
+        if not start_id or not end_id or not relation_type:
+            continue
+        relation = {
+            "start_id": start_id,
+            "end_id": end_id,
+            "relation_type": relation_type,
+            "evidence_count": int(row.get("evidence_count") or 1),
+            "record_ids": [str(item) for item in (row.get("record_ids") or []) if str(item).strip()],
+            "example_text": str(row.get("example_text") or ""),
+            "manual_override": bool(row.get("manual_override")),
+            "manual_override_id": str(row.get("manual_override_id") or "") or None,
+        }
+        relation_type_breakdown[relation_type] += 1
+        outgoing_relations[start_id].append(relation)
+        incoming_relations[end_id].append(relation)
+
+    mention_rows = _run_neo4j_read(
+        """
+        MATCH (c:Clause)-[m:CLAUSE_MENTIONS_ENTITY]->(e:Entity)
+        RETURN
+          c.clause_id AS clause_id,
+          coalesce(c.record_id, m.record_id, "") AS record_id,
+          coalesce(c.entry_type, "") AS entry_type,
+          coalesce(c.line_number, 0) AS line_number,
+          coalesce(c.text, "") AS clause_text,
+          e.entity_id AS entity_id,
+          coalesce(m.entity_type, e.entity_type, "") AS entity_type,
+          coalesce(m.mention_text, e.name, "") AS mention_text,
+          coalesce(m.start, 0) AS start,
+          coalesce(m.end, 0) AS end
+        """
+    )
+    for row in mention_rows:
+        entity_id = str(row.get("entity_id") or "")
+        if not entity_id:
+            continue
+        mention = {
+            "clause_id": str(row.get("clause_id") or ""),
+            "record_id": str(row.get("record_id") or ""),
+            "entity_type": str(row.get("entity_type") or ""),
+            "mention_text": str(row.get("mention_text") or ""),
+            "start": int(row.get("start") or 0),
+            "end": int(row.get("end") or 0),
+            "clause_text": str(row.get("clause_text") or ""),
+            "entry_type": str(row.get("entry_type") or "") or None,
+            "line_number": int(row.get("line_number") or 0),
+        }
+        mentions_by_entity[entity_id].append(mention)
+
+    summary = _base_summary_from_graph_dir(paths, clauses)
+    return _finalize_graph_payload(
+        summary=summary,
+        active_graph=active_graph,
+        entities=entities,
+        clauses=clauses,
+        outgoing_relations=outgoing_relations,
+        incoming_relations=incoming_relations,
+        mentions_by_entity=mentions_by_entity,
+        entity_type_breakdown=entity_type_breakdown,
+        relation_type_breakdown=relation_type_breakdown,
+        query_source="neo4j",
+    )
+
+
+@lru_cache(maxsize=1)
+def load_graph_data() -> dict[str, Any]:
+    source = _read_graph_query_source()
+    if source == "neo4j":
+        try:
+            return _load_graph_data_from_neo4j()
+        except Exception:
+            if not _read_graph_query_fallback_to_csv():
+                raise
+            return _load_graph_data_from_csv()
+    return _load_graph_data_from_csv()
 
 
 def build_graph_summary() -> dict[str, Any]:
@@ -602,6 +860,161 @@ def search_entities(keyword: str = "", entity_type: str | None = None, limit: in
         "entity_type": normalized_type or None,
         "total": len(results),
         "results": results[:safe_limit],
+    }
+
+
+def _build_clause_mentions(data: dict[str, Any], clause_id: str) -> list[dict[str, Any]]:
+    mentions: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for entity_id, rows in data["mentions_by_entity"].items():
+        entity = data["entities"].get(entity_id)
+        if entity is None:
+            continue
+        for row in rows:
+            if str(row.get("clause_id") or "") != clause_id:
+                continue
+            signature = f"{entity_id}|{int(row.get('start') or 0)}|{int(row.get('end') or 0)}|{str(row.get('mention_text') or '')}"
+            if signature in seen_keys:
+                continue
+            seen_keys.add(signature)
+            mentions.append(
+                {
+                    "entity_id": entity_id,
+                    "entity_name": entity["name"],
+                    "entity_type": entity["entity_type"],
+                    "mention_text": str(row.get("mention_text") or ""),
+                    "start": int(row.get("start") or 0),
+                    "end": int(row.get("end") or 0),
+                }
+            )
+    mentions.sort(key=lambda item: (item["start"], item["end"], item["entity_type"], item["entity_name"]))
+    return mentions
+
+
+def search_clauses(
+    keyword: str = "",
+    entry_type: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict[str, Any]:
+    data = load_graph_data()
+    normalized_keyword = keyword.strip()
+    normalized_entry_type = (entry_type or "").strip()
+    safe_page = max(1, int(page))
+    safe_page_size = max(1, min(int(page_size), 100))
+
+    rows: list[dict[str, Any]] = []
+    for clause in data["clauses"].values():
+        text = str(clause.get("text") or "")
+        clause_id = str(clause.get("clause_id") or "")
+        record_id = str(clause.get("record_id") or "")
+        current_entry_type = str(clause.get("entry_type") or "")
+
+        if normalized_entry_type and current_entry_type != normalized_entry_type:
+            continue
+        if normalized_keyword and normalized_keyword not in text and normalized_keyword not in clause_id and normalized_keyword not in record_id:
+            continue
+
+        rows.append(
+            {
+                "clause_id": clause_id,
+                "record_id": record_id,
+                "line_number": clause.get("line_number"),
+                "entry_type": clause.get("entry_type"),
+                "text": text,
+            }
+        )
+
+    rows.sort(key=lambda item: (str(item["record_id"]), int(item.get("line_number") or 0), str(item["clause_id"])))
+    total = len(rows)
+    total_pages = (total + safe_page_size - 1) // safe_page_size if total else 0
+    if total_pages and safe_page > total_pages:
+        safe_page = total_pages
+    offset = (safe_page - 1) * safe_page_size
+    paged_rows = rows[offset : offset + safe_page_size]
+
+    results = []
+    for item in paged_rows:
+        mentions = _build_clause_mentions(data, item["clause_id"])
+        results.append(
+            {
+                **item,
+                "mention_count": len(mentions),
+                "entity_types": sorted({mention["entity_type"] for mention in mentions}),
+            }
+        )
+
+    return {
+        "keyword": normalized_keyword,
+        "entry_type": normalized_entry_type or None,
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "total_pages": total_pages,
+        "has_next": safe_page < total_pages,
+        "has_previous": safe_page > 1 and total_pages > 0,
+        "results": results,
+    }
+
+
+def get_clause_detail(clause_id: str) -> dict[str, Any]:
+    data = load_graph_data()
+    clause = data["clauses"].get(clause_id)
+    if clause is None:
+        raise KeyError(clause_id)
+
+    mentions = _build_clause_mentions(data, clause_id)
+    mention_entity_ids = {str(item["entity_id"]) for item in mentions}
+    relations: list[dict[str, Any]] = []
+    seen_relations: set[str] = set()
+
+    for start_id in mention_entity_ids:
+        for relation in data["outgoing_relations"].get(start_id, []):
+            end_id = str(relation.get("end_id") or "")
+            if end_id not in mention_entity_ids:
+                continue
+            start_entity = data["entities"].get(start_id)
+            end_entity = data["entities"].get(end_id)
+            if start_entity is None or end_entity is None:
+                continue
+            signature = f"{start_id}|{end_id}|{relation['relation_type']}"
+            if signature in seen_relations:
+                continue
+            seen_relations.add(signature)
+            relations.append(
+                {
+                    "relation_type": relation["relation_type"],
+                    "evidence_count": int(relation.get("evidence_count") or 0),
+                    "start_entity": _entity_brief(start_entity),
+                    "end_entity": _entity_brief(end_entity),
+                }
+            )
+
+    relations.sort(
+        key=lambda item: (
+            item["relation_type"],
+            item["start_entity"]["entity_type"],
+            item["start_entity"]["name"],
+            item["end_entity"]["entity_type"],
+            item["end_entity"]["name"],
+        )
+    )
+
+    return {
+        "clause": {
+            "clause_id": clause["clause_id"],
+            "record_id": clause["record_id"],
+            "line_number": clause["line_number"],
+            "entry_type": clause["entry_type"],
+            "text": clause["text"],
+        },
+        "mentions": mentions,
+        "relations": relations,
+        "stats": {
+            "mention_count": len(mentions),
+            "entity_count": len(mention_entity_ids),
+            "relation_count": len(relations),
+        },
     }
 
 

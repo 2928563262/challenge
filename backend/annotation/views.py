@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -84,12 +86,21 @@ def serialize_candidate(candidate: AnnotationCandidate, include_payload: bool = 
 
 class AnnotationCandidateListCreateView(APIView):
     def get(self, request):
-        raw_limit = request.query_params.get("limit") or str(DEFAULT_LIST_LIMIT)
+        raw_limit = request.query_params.get("limit")
+        raw_page = request.query_params.get("page") or "1"
+        raw_page_size = request.query_params.get("page_size") or raw_limit or str(DEFAULT_LIST_LIMIT)
         status_filter = str(request.query_params.get("status") or "").strip()
+        keyword = str(request.query_params.get("q") or "").strip()
+
         try:
-            limit = max(1, min(int(raw_limit), MAX_LIST_LIMIT))
+            page = max(1, int(raw_page))
         except ValueError:
-            return Response({"detail": "limit query parameter must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "page query parameter must be a positive integer."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            page_size = max(1, min(int(raw_page_size), MAX_LIST_LIMIT))
+        except ValueError:
+            return Response({"detail": "page_size query parameter must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
 
         queryset = AnnotationCandidate.objects.all()
         if status_filter:
@@ -99,13 +110,27 @@ class AnnotationCandidateListCreateView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             queryset = queryset.filter(status=status_filter)
+        if keyword:
+            queryset = queryset.filter(
+                Q(record_id__icontains=keyword) | Q(source_text__icontains=keyword) | Q(source_page__icontains=keyword)
+            )
 
         total = queryset.count()
-        queryset = queryset[:limit]
+        total_pages = (total + page_size - 1) // page_size if total else 0
+        if total_pages and page > total_pages:
+            page = total_pages
+        offset = (page - 1) * page_size
+        queryset = queryset[offset : offset + page_size]
         return Response(
             {
                 "total": total,
-                "limit": limit,
+                "limit": page_size,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_previous": page > 1 and total_pages > 0,
+                "q": keyword,
                 "results": [serialize_candidate(item) for item in queryset],
             }
         )
@@ -147,6 +172,42 @@ class AnnotationCandidateListCreateView(APIView):
         if candidate.status in {STATUS_ACCEPTED, STATUS_REVIEWED}:
             payload["auto_graph_refresh"] = _run_reviewed_graph_refresh_safe()
         return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class AnnotationCandidateBatchStatusView(APIView):
+    def post(self, request):
+        record_ids = request.data.get("record_ids")
+        status_value = str(request.data.get("status") or "").strip()
+        if not isinstance(record_ids, list) or not record_ids:
+            return Response({"detail": "record_ids must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+        if status_value not in VALID_STATUSES:
+            return Response(
+                {"detail": f"status must be one of: {', '.join(sorted(VALID_STATUSES))}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        normalized_record_ids = [str(item).strip() for item in record_ids if str(item).strip()]
+        if not normalized_record_ids:
+            return Response({"detail": "record_ids must contain at least one valid id."}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = AnnotationCandidate.objects.filter(record_id__in=normalized_record_ids)
+        existing_ids = {item.record_id for item in queryset.only("record_id")}
+        missing_ids = [item for item in normalized_record_ids if item not in existing_ids]
+        if not existing_ids:
+            return Response({"detail": "no candidates found for given record_ids."}, status=status.HTTP_404_NOT_FOUND)
+
+        updated_count = queryset.update(status=status_value, updated_at=timezone.now())
+        payload: dict[str, object] = {
+            "updated_count": int(updated_count),
+            "requested_count": len(normalized_record_ids),
+            "status": status_value,
+            "missing_ids": missing_ids,
+        }
+        if status_value == STATUS_ACCEPTED:
+            payload["auto_pipeline_refresh"] = _run_accepted_pipeline_refresh_safe()
+        if status_value in {STATUS_ACCEPTED, STATUS_REVIEWED}:
+            payload["auto_graph_refresh"] = _run_reviewed_graph_refresh_safe()
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class AnnotationCandidateDetailView(APIView):
@@ -224,3 +285,15 @@ class AnnotationCandidateDetailView(APIView):
             payload["auto_graph_refresh"] = _run_reviewed_graph_refresh_safe()
 
         return Response(payload)
+
+    def delete(self, request, record_id: str):
+        candidate = self.get_candidate(record_id)
+        if candidate is None:
+            return Response({"detail": "candidate not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payload = {
+            "record_id": candidate.record_id,
+            "status": candidate.status,
+        }
+        candidate.delete()
+        return Response({"deleted": True, "record": payload}, status=status.HTTP_200_OK)

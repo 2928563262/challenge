@@ -68,6 +68,28 @@ class AnnotationApiTests(TestCase):
         self.assertEqual(payload["total"], 1)
         self.assertEqual(payload["results"][0]["status"], "accepted")
 
+    def test_list_candidates_supports_keyword_and_pagination(self):
+        first = AnnotationCandidate.objects.create(source_text="桂枝汤主之", status="pending", session_payload={})
+        AnnotationCandidate.objects.create(source_text="小柴胡汤主之", status="pending", session_payload={})
+        third = AnnotationCandidate.objects.create(source_text="桂枝去芍药汤", status="pending", session_payload={})
+
+        response = self.client.get("/api/v1/annotation/candidates/?q=桂枝&page=2&page_size=1")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total"], 2)
+        self.assertEqual(payload["page"], 2)
+        self.assertEqual(payload["page_size"], 1)
+        self.assertEqual(payload["total_pages"], 2)
+        self.assertFalse(payload["has_next"])
+        self.assertTrue(payload["has_previous"])
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["record_id"], first.record_id)
+
+    def test_list_candidates_rejects_invalid_page_parameter(self):
+        response = self.client.get("/api/v1/annotation/candidates/?page=abc")
+        self.assertEqual(response.status_code, 400)
+
     def test_get_candidate_detail_returns_payload(self):
         candidate = AnnotationCandidate.objects.create(source_text="?", session_payload={"node_count": 1, "edge_count": 0, "nodes": []})
 
@@ -77,6 +99,49 @@ class AnnotationApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["record_id"], candidate.record_id)
         self.assertIn("session_payload", payload)
+
+    @patch("annotation.views._run_reviewed_graph_refresh_safe")
+    @patch("annotation.views._run_accepted_pipeline_refresh_safe")
+    def test_batch_status_update_sets_multiple_records(self, pipeline_mock, graph_mock):
+        pipeline_mock.return_value = {"triggered": True, "ok": True}
+        graph_mock.return_value = {"triggered": True, "ok": True}
+        candidate_a = AnnotationCandidate.objects.create(source_text="a", status="pending", session_payload={})
+        candidate_b = AnnotationCandidate.objects.create(source_text="b", status="pending", session_payload={})
+
+        response = self.client.post(
+            "/api/v1/annotation/candidates/batch-status/",
+            {"record_ids": [candidate_a.record_id, candidate_b.record_id], "status": "accepted"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["updated_count"], 2)
+        candidate_a.refresh_from_db()
+        candidate_b.refresh_from_db()
+        self.assertEqual(candidate_a.status, "accepted")
+        self.assertEqual(candidate_b.status, "accepted")
+        pipeline_mock.assert_called_once()
+        graph_mock.assert_called_once()
+
+    def test_batch_status_update_rejects_invalid_payload(self):
+        response = self.client.post(
+            "/api/v1/annotation/candidates/batch-status/",
+            {"record_ids": [], "status": "accepted"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_delete_candidate_removes_record(self):
+        candidate = AnnotationCandidate.objects.create(source_text="?", session_payload={"node_count": 1, "edge_count": 0})
+
+        response = self.client.delete(f"/api/v1/annotation/candidates/{candidate.record_id}/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["deleted"])
+        self.assertEqual(payload["record"]["record_id"], candidate.record_id)
+        self.assertEqual(AnnotationCandidate.objects.filter(record_id=candidate.record_id).count(), 0)
 
     @patch("annotation.views._run_reviewed_graph_refresh_safe")
     @patch("annotation.views._run_accepted_pipeline_refresh_safe")
@@ -141,6 +206,97 @@ class AnnotationApiTests(TestCase):
         self.assertEqual(candidate.node_count, 2)
         self.assertEqual(candidate.edge_count, 1)
         self.assertEqual(candidate.session_payload["text"], "新文本")
+
+    def test_patch_candidate_can_add_relation_via_session_payload(self):
+        candidate = AnnotationCandidate.objects.create(
+            source_text="demo",
+            session_payload={
+                "text": "demo",
+                "node_count": 2,
+                "edge_count": 0,
+                "nodes": [
+                    {"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                    {"key": "n2", "text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                ],
+                "edges": [],
+            },
+        )
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {
+                "session_payload": {
+                    "text": "太阳病，头痛发热，桂枝汤主之。",
+                    "node_count": 2,
+                    "edge_count": 1,
+                    "nodes": [
+                        {"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                        {"key": "n2", "text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                    ],
+                    "edges": [
+                        {
+                            "label": "SYNDROME_TO_FORMULA",
+                            "head": {"text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                            "tail": {"text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                            "confidence": 1,
+                            "source_mode": "manual",
+                        }
+                    ],
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.edge_count, 1)
+        self.assertEqual(len(candidate.session_payload["edges"]), 1)
+        self.assertEqual(candidate.session_payload["edges"][0]["label"], "SYNDROME_TO_FORMULA")
+
+    def test_patch_candidate_can_remove_relation_via_session_payload(self):
+        candidate = AnnotationCandidate.objects.create(
+            source_text="demo",
+            session_payload={
+                "text": "太阳病，头痛发热，桂枝汤主之。",
+                "node_count": 2,
+                "edge_count": 1,
+                "nodes": [
+                    {"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                    {"key": "n2", "text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                ],
+                "edges": [
+                    {
+                        "label": "SYNDROME_TO_FORMULA",
+                        "head": {"text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                        "tail": {"text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                        "confidence": 1,
+                        "source_mode": "manual",
+                    }
+                ],
+            },
+        )
+
+        response = self.client.patch(
+            f"/api/v1/annotation/candidates/{candidate.record_id}/",
+            {
+                "session_payload": {
+                    "text": "太阳病，头痛发热，桂枝汤主之。",
+                    "node_count": 2,
+                    "edge_count": 0,
+                    "nodes": [
+                        {"key": "n1", "text": "太阳病", "type": "SYNDROME", "start": 0, "end": 3},
+                        {"key": "n2", "text": "桂枝汤", "type": "FORMULA", "start": 8, "end": 11},
+                    ],
+                    "edges": [],
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        candidate.refresh_from_db()
+        self.assertEqual(candidate.edge_count, 0)
+        self.assertEqual(len(candidate.session_payload["edges"]), 0)
 
 
     @patch("annotation.views._run_reviewed_graph_refresh_safe")

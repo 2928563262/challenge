@@ -8,7 +8,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .registry import register_graph_export
-from .services import load_graph_data, run_neo4j_sync
+from .services import GraphDataUnavailableError, load_graph_data, run_neo4j_sync
 
 
 class GraphApiTests(TestCase):
@@ -44,6 +44,7 @@ class GraphApiTests(TestCase):
         self.assertIn("entity_type_breakdown", payload)
         self.assertIn("top_entities", payload)
         self.assertIn("graph_version", payload)
+        self.assertIn("query_source", payload)
 
     def test_graph_showcase_endpoint_returns_cases(self):
         response = self.client.get("/api/v1/graph/showcase/")
@@ -108,6 +109,37 @@ class GraphApiTests(TestCase):
         response = self.client.get("/api/v1/graph/entities/UNKNOWN%7CENTITY/pathways/", {"limit": "abc"})
 
         self.assertEqual(response.status_code, 400)
+
+    def test_graph_clause_search_supports_keyword_and_pagination(self):
+        response = self.client.get("/api/v1/graph/clauses/", {"keyword": "汤", "page": 1, "page_size": 5})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("total", payload)
+        self.assertIn("results", payload)
+        self.assertIn("page", payload)
+        self.assertIn("total_pages", payload)
+        self.assertLessEqual(len(payload["results"]), 5)
+        if payload["results"]:
+            self.assertIn("clause_id", payload["results"][0])
+            self.assertIn("mention_count", payload["results"][0])
+
+    def test_graph_clause_detail_returns_mentions_and_relations(self):
+        search_response = self.client.get("/api/v1/graph/clauses/", {"page": 1, "page_size": 1})
+        clause_id = search_response.json()["results"][0]["clause_id"]
+
+        response = self.client.get(f"/api/v1/graph/clauses/{quote(clause_id, safe='')}/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["clause"]["clause_id"], clause_id)
+        self.assertIn("mentions", payload)
+        self.assertIn("relations", payload)
+        self.assertIn("stats", payload)
+
+    def test_graph_clause_detail_returns_404_for_unknown_clause(self):
+        response = self.client.get("/api/v1/graph/clauses/UNKNOWN%7CCLAUSE/")
+        self.assertEqual(response.status_code, 404)
 
     def test_graph_registry_endpoint_returns_active_version(self):
         record = register_graph_export(
@@ -454,3 +486,44 @@ class GraphApiTests(TestCase):
         self.assertEqual(payload["total"], 2)
         ids = {item["id"] for item in payload["records"]}
         self.assertEqual(ids, {"manual-active", "manual-global"})
+
+    def test_load_graph_data_prefers_neo4j_when_enabled(self):
+        fake_payload = {
+            "summary": {"query_source": "neo4j"},
+            "entities": {},
+            "clauses": {},
+            "outgoing_relations": {},
+            "incoming_relations": {},
+            "mentions_by_entity": {},
+        }
+        with patch.dict(os.environ, {"GRAPH_QUERY_SOURCE": "neo4j"}, clear=False):
+            with patch("graph.services._load_graph_data_from_neo4j", return_value=fake_payload) as neo4j_loader:
+                load_graph_data.cache_clear()
+                payload = load_graph_data()
+        self.assertEqual(payload["summary"]["query_source"], "neo4j")
+        neo4j_loader.assert_called_once()
+
+    def test_load_graph_data_falls_back_to_csv_when_neo4j_unavailable(self):
+        csv_payload = {
+            "summary": {"query_source": "csv"},
+            "entities": {},
+            "clauses": {},
+            "outgoing_relations": {},
+            "incoming_relations": {},
+            "mentions_by_entity": {},
+        }
+        with patch.dict(
+            os.environ,
+            {"GRAPH_QUERY_SOURCE": "neo4j", "GRAPH_QUERY_FALLBACK_TO_CSV": "true"},
+            clear=False,
+        ):
+            with patch(
+                "graph.services._load_graph_data_from_neo4j",
+                side_effect=GraphDataUnavailableError("neo4j unavailable"),
+            ) as neo4j_loader:
+                with patch("graph.services._load_graph_data_from_csv", return_value=csv_payload) as csv_loader:
+                    load_graph_data.cache_clear()
+                    payload = load_graph_data()
+        self.assertEqual(payload["summary"]["query_source"], "csv")
+        neo4j_loader.assert_called_once()
+        csv_loader.assert_called_once()

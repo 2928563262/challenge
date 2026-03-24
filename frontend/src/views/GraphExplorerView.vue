@@ -7,26 +7,31 @@ import { useRoute, useRouter } from "vue-router";
 import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel } from "../i18n";
 import {
+  activateGraphVersion,
   deleteGraphManualRelation,
+  fetchGraphClauseDetail,
   fetchGraphEntityDetail,
   fetchGraphEntityPathways,
   fetchGraphManualRelations,
+  fetchGraphRegistry,
   fetchGraphShowcase,
   fetchGraphSummary,
   predictNer,
   predictRelation,
   saveAnnotationCandidate,
-  searchCorpus,
+  searchGraphClauses,
   searchGraphEntities,
   suppressGraphRelation,
   upsertGraphManualRelation,
 } from "../services/api";
 import type {
-  CorpusEntry,
+  GraphClauseDetail,
+  GraphClauseSearchRecord,
   GraphEntity,
   GraphEntityDetail,
   GraphManualRelationOverrideRecord,
   GraphEntityPathways,
+  GraphRegistryStatus,
   GraphRelation,
   GraphShowcaseCase,
   GraphSummary,
@@ -65,6 +70,7 @@ function tf(key: string, params: Record<string, string | number>) {
 }
 
 const graphSummary = ref<GraphSummary | null>(null);
+const graphRegistry = ref<GraphRegistryStatus | null>(null);
 const showcaseCases = ref<GraphShowcaseCase[]>([]);
 const selectedEntityDetail = ref<GraphEntityDetail | null>(null);
 const entityPathways = ref<GraphEntityPathways | null>(null);
@@ -80,6 +86,7 @@ const savingCandidate = ref(false);
 const batchRelationPredicting = ref(false);
 
 const loadingGraphSummary = ref(false);
+const loadingGraphRegistry = ref(false);
 const loadingShowcase = ref(false);
 const searching = ref(false);
 const loadingEntityDetail = ref(false);
@@ -97,6 +104,8 @@ const relationPredictError = ref("");
 const relationBatchMessage = ref("");
 const manualGraphRelationError = ref("");
 const manualGraphRelationMessage = ref("");
+const graphVersionMessage = ref("");
+const switchingGraphVersion = ref(false);
 
 const keyword = ref("桂枝汤");
 const entityType = ref("FORMULA");
@@ -112,14 +121,16 @@ const graphManualRelationCandidates = ref<GraphEntity[]>([]);
 const graphManualRelationTargetId = ref("");
 const searchResults = ref<GraphEntity[]>([]);
 const searchTotal = ref(0);
-const corpusResults = ref<CorpusEntry[]>([]);
-const corpusTotal = ref(0);
+const clauseResults = ref<GraphClauseSearchRecord[]>([]);
+const clauseTotal = ref(0);
+const selectedClauseDetail = ref<GraphClauseDetail | null>(null);
 const manualEntityText = ref("");
 const manualEntityType = ref("SYMPTOM");
 const manualEntityStart = ref("");
 const manualEntityNote = ref("");
 const manualEntityError = ref("");
 const entityDisplayNotes = ref<Record<string, string>>({});
+const selectedGraphVersionId = ref("");
 
 const entityTypeOptions = [
   { label: formatEntityTypeLabel("FORMULA"), value: "FORMULA" },
@@ -164,6 +175,15 @@ const quickStats = computed(() => {
     { label: t("explorer.stats.relations"), value: graphSummary.value.entity_relation_count.toLocaleString("zh-CN") },
     { label: t("explorer.stats.evidence"), value: graphSummary.value.clause_mention_count.toLocaleString("zh-CN") },
   ];
+});
+
+const graphVersionOptions = computed(() => graphRegistry.value?.versions ?? []);
+const graphQuerySourceLabel = computed(() => {
+  const source = String((graphSummary.value as Record<string, unknown> | null)?.query_source || "").toLowerCase();
+  if (source === "neo4j") {
+    return t("explorer.graphVersion.querySourceNeo4j");
+  }
+  return t("explorer.graphVersion.querySourceCsv");
 });
 
 const predictedEntities = computed(() => nerPrediction.value?.entities ?? []);
@@ -683,6 +703,50 @@ async function loadGraphSummary() {
   }
 }
 
+async function loadGraphRegistry() {
+  loadingGraphRegistry.value = true;
+  graphError.value = "";
+  try {
+    graphRegistry.value = await fetchGraphRegistry();
+    selectedGraphVersionId.value = graphRegistry.value.active.id;
+  } catch {
+    graphError.value = t("explorer.errors.graphRegistryLoadFailed");
+  } finally {
+    loadingGraphRegistry.value = false;
+  }
+}
+
+async function runGraphVersionSwitch() {
+  if (!selectedGraphVersionId.value.trim()) {
+    graphError.value = t("explorer.errors.graphVersionRequired");
+    return;
+  }
+  switchingGraphVersion.value = true;
+  graphError.value = "";
+  graphVersionMessage.value = "";
+  try {
+    const payload = await activateGraphVersion(selectedGraphVersionId.value);
+    graphRegistry.value = payload.registry;
+    selectedGraphVersionId.value = payload.registry.active.id;
+    graphVersionMessage.value = tf("explorer.messages.graphVersionSwitched", {
+      runName: payload.record.run_name,
+    });
+
+    await Promise.all([loadGraphSummary(), loadShowcase(), loadManualGraphRelations()]);
+    if (selectedEntityDetail.value?.entity.entity_id) {
+      await loadEntityDetail(selectedEntityDetail.value.entity.entity_id, false);
+    }
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      graphError.value = String(error.response?.data?.detail || t("explorer.errors.graphVersionSwitchFailed"));
+    } else {
+      graphError.value = t("explorer.errors.graphVersionSwitchFailed");
+    }
+  } finally {
+    switchingGraphVersion.value = false;
+  }
+}
+
 async function loadShowcase() {
   loadingShowcase.value = true;
   showcaseError.value = "";
@@ -873,6 +937,14 @@ async function loadEntityDetail(entityId: string, updateRoute = true) {
   }
 }
 
+async function loadClauseDetail(clauseId: string) {
+  try {
+    selectedClauseDetail.value = await fetchGraphClauseDetail(clauseId);
+  } catch {
+    selectedClauseDetail.value = null;
+  }
+}
+
 async function runSearch(updateRoute = true) {
   const normalizedKeyword = keyword.value.trim();
   if (!normalizedKeyword) {
@@ -884,15 +956,21 @@ async function runSearch(updateRoute = true) {
   searchError.value = "";
 
   try {
-    const [graphPayload, corpusPayload] = await Promise.all([
+    const [graphPayload, clausePayload] = await Promise.all([
       searchGraphEntities({ keyword: normalizedKeyword, entityType: entityType.value, limit: 10 }),
-      searchCorpus(normalizedKeyword),
+      searchGraphClauses({ keyword: normalizedKeyword, page: 1, pageSize: 12 }),
     ]);
 
     searchResults.value = graphPayload.results;
     searchTotal.value = graphPayload.total;
-    corpusResults.value = corpusPayload.results;
-    corpusTotal.value = corpusPayload.total;
+    clauseResults.value = clausePayload.results;
+    clauseTotal.value = clausePayload.total;
+    const firstClauseId = clausePayload.results[0]?.clause_id || "";
+    if (firstClauseId) {
+      await loadClauseDetail(firstClauseId);
+    } else {
+      selectedClauseDetail.value = null;
+    }
 
     let targetEntityId = typeof route.query.entityId === "string" ? route.query.entityId : "";
     const selectedExists = graphPayload.results.some((item) => item.entity_id === targetEntityId);
@@ -1098,6 +1176,12 @@ async function jumpToPredictedEntity(entity: NerPredictionEntity) {
   await openEntityInGraph(entity);
 }
 
+async function openClauseRecord(item: GraphClauseSearchRecord) {
+  await loadClauseDetail(item.clause_id);
+  nerInputText.value = item.text;
+  relationInputText.value = item.text;
+}
+
 function downloadSessionGraph() {
   if (!sessionGraphNodes.value.length) {
     exportMessage.value = t("explorer.errors.exportNoGraphData");
@@ -1188,7 +1272,7 @@ async function openShowcaseCase(caseItem: GraphShowcaseCase) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadGraphSummary(), loadShowcase(), loadManualGraphRelations()]);
+  await Promise.all([loadGraphSummary(), loadGraphRegistry(), loadShowcase(), loadManualGraphRelations()]);
   await applyRouteState();
   await runNerPrediction();
 });
@@ -1213,6 +1297,23 @@ watch(
           <RouterLink to="/" class="ghost-link">{{ t("explorer.backToOverview") }}</RouterLink>
         </div>
       </div>
+
+      <div class="graph-version-strip">
+        <label>
+          <span>{{ t("explorer.graphVersion.label") }}</span>
+          <select v-model="selectedGraphVersionId" :disabled="loadingGraphRegistry || switchingGraphVersion">
+            <option v-for="item in graphVersionOptions" :key="item.id" :value="item.id">{{ item.run_name }}</option>
+          </select>
+        </label>
+        <button class="ghost-button" type="button" :disabled="loadingGraphRegistry || switchingGraphVersion" @click="runGraphVersionSwitch">
+          {{ switchingGraphVersion ? t("explorer.graphVersion.switching") : t("explorer.graphVersion.switch") }}
+        </button>
+        <p class="status-text">{{ t("explorer.graphVersion.querySource") }}：{{ graphQuerySourceLabel }}</p>
+      </div>
+
+      <StatePanel v-if="graphVersionMessage" tone="success">
+        <p>{{ graphVersionMessage }}</p>
+      </StatePanel>
 
       <div class="quick-stat-row">
         <article v-for="item in quickStats" :key="item.label" class="mini-stat-card">
@@ -1569,7 +1670,7 @@ watch(
           <p>{{ searchError }}</p>
         </StatePanel>
         <StatePanel v-else tone="info">
-          <p>{{ tf("explorer.searchResultSummary", { entityCount: searchTotal, corpusCount: corpusTotal }) }}</p>
+          <p>{{ tf("explorer.searchResultSummary", { entityCount: searchTotal, corpusCount: clauseTotal }) }}</p>
         </StatePanel>
 
         <div class="entity-result-list">
@@ -1774,14 +1875,26 @@ watch(
         </div>
 
         <div class="result-list">
-          <div v-for="entry in corpusResults" :key="entry.id" class="result-item">
+          <button
+            v-for="entry in clauseResults"
+            :key="entry.clause_id"
+            type="button"
+            class="result-item text-preview-item"
+            :class="{ active: selectedClauseDetail?.clause.clause_id === entry.clause_id }"
+            @click="openClauseRecord(entry)"
+          >
             <div class="result-meta">
-              <span>{{ tf("home.recordLabel", { id: entry.id }) }}</span>
-              <span v-if="entry.formula_name">{{ entry.formula_name }}</span>
+              <span>{{ entry.record_id }}</span>
+              <span>{{ entry.entry_type ? formatEntryType(entry.entry_type) : t("common.unknown") }}</span>
+              <span>{{ tf("explorer.focus.evidence", { count: entry.mention_count }) }}</span>
             </div>
             <p>{{ entry.text }}</p>
-          </div>
+          </button>
         </div>
+        <StatePanel v-if="selectedClauseDetail" tone="info">
+          <p>{{ selectedClauseDetail.clause.record_id }} · {{ selectedClauseDetail.clause.clause_id }}</p>
+          <p>{{ tf("explorer.focus.evidence", { count: selectedClauseDetail.stats.mention_count }) }}</p>
+        </StatePanel>
       </article>
     </section>
   </main>

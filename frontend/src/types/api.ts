@@ -22,6 +22,14 @@ export interface CorpusOverview {
 export interface CorpusSearchResult {
   keyword: string;
   total: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
+  has_next?: boolean;
+  has_previous?: boolean;
+  formula_related?: boolean | null;
+  sort_by?: string;
+  sort_order?: "asc" | "desc" | string;
   results: CorpusEntry[];
 }
 
@@ -88,6 +96,62 @@ export interface GraphMention {
   clause_text: string;
   entry_type: string | null;
   line_number: number | null;
+}
+
+export interface GraphClauseSearchRecord {
+  clause_id: string;
+  record_id: string;
+  line_number: number | null;
+  entry_type: string | null;
+  text: string;
+  text_length?: number;
+  mention_count: number;
+  entity_types: string[];
+}
+
+export interface GraphClauseSearchResponse {
+  keyword: string;
+  entry_type: string | null;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  has_next: boolean;
+  has_previous: boolean;
+  results: GraphClauseSearchRecord[];
+}
+
+export interface GraphClauseMention {
+  entity_id: string;
+  entity_name: string;
+  entity_type: string;
+  mention_text: string;
+  start: number;
+  end: number;
+}
+
+export interface GraphClauseRelation {
+  relation_type: string;
+  evidence_count: number;
+  start_entity: Pick<GraphEntity, "entity_id" | "entity_type" | "name">;
+  end_entity: Pick<GraphEntity, "entity_id" | "entity_type" | "name">;
+}
+
+export interface GraphClauseDetail {
+  clause: {
+    clause_id: string;
+    record_id: string;
+    line_number: number | null;
+    entry_type: string | null;
+    text: string;
+  };
+  mentions: GraphClauseMention[];
+  relations: GraphClauseRelation[];
+  stats: {
+    mention_count: number;
+    entity_count: number;
+    relation_count: number;
+  };
 }
 
 export interface GraphEntityDetail {
@@ -428,7 +492,30 @@ export interface AnnotationCandidateUpdatePayload {
 export interface AnnotationCandidateListResponse {
   total: number;
   limit: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
+  has_next?: boolean;
+  has_previous?: boolean;
+  q?: string;
   results: AnnotationCandidateRecord[];
+}
+
+export interface AnnotationCandidateDeleteResponse {
+  deleted: boolean;
+  record: {
+    record_id: string;
+    status: string;
+  };
+}
+
+export interface AnnotationCandidateBatchStatusResponse {
+  updated_count: number;
+  requested_count: number;
+  status: string;
+  missing_ids: string[];
+  auto_pipeline_refresh?: AutoPipelineRefreshMeta;
+  auto_graph_refresh?: AutoGraphRefreshMeta;
 }
 
 export interface AcceptedPipelineRefreshResponse {

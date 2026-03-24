@@ -2,12 +2,28 @@ import { createI18n } from "vue-i18n";
 
 import { zhCN } from "./locales/zh-CN";
 
+const zhCNAnnotationOverrides = {
+  totalCount: "共复核 {count} 条",
+  searchPlaceholder: "搜索 record_id 或条文关键词",
+  searchAction: "搜索",
+  clearSearchAction: "清空",
+  prevPage: "上一页",
+  nextPage: "下一页",
+  pageSummary: "第 {page} 页 / 共 {totalPages} 页",
+};
+
 export const i18n = createI18n({
   legacy: false,
   locale: "zh-CN",
   fallbackLocale: "zh-CN",
   messages: {
-    "zh-CN": zhCN,
+    "zh-CN": {
+      ...zhCN,
+      annotation: {
+        ...zhCN.annotation,
+        ...zhCNAnnotationOverrides,
+      },
+    },
   },
 });
 

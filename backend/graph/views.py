@@ -15,9 +15,11 @@ from .services import (
     get_graph_registry_status,
     get_graph_sync_status,
     get_entity_detail,
+    get_clause_detail,
     list_manual_relations,
     run_neo4j_sync,
     run_reviewed_graph_refresh,
+    search_clauses,
     search_entities,
 )
 
@@ -172,6 +174,36 @@ class GraphEntitySearchView(APIView):
 
         try:
             payload = search_entities(keyword=keyword, entity_type=entity_type, limit=parsed_limit)
+        except GraphDataUnavailableError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(payload)
+
+
+class GraphClauseSearchView(APIView):
+    def get(self, request):
+        keyword = (request.query_params.get("keyword") or "").strip()
+        entry_type = (request.query_params.get("entry_type") or "").strip() or None
+        page = request.query_params.get("page") or "1"
+        page_size = request.query_params.get("page_size") or "20"
+        try:
+            parsed_page = int(page)
+            parsed_page_size = int(page_size)
+        except ValueError:
+            return Response({"detail": "page and page_size query parameters must be integers."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            payload = search_clauses(keyword=keyword, entry_type=entry_type, page=parsed_page, page_size=parsed_page_size)
+        except GraphDataUnavailableError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return Response(payload)
+
+
+class GraphClauseDetailView(APIView):
+    def get(self, request, clause_id: str):
+        try:
+            payload = get_clause_detail(clause_id=clause_id)
+        except KeyError:
+            return Response({"detail": "clause not found."}, status=status.HTTP_404_NOT_FOUND)
         except GraphDataUnavailableError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return Response(payload)

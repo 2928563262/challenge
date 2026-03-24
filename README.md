@@ -31,6 +31,11 @@ npm run dev
 
 前端默认读取 `http://127.0.0.1:8000/api/v1`，可通过 `frontend/.env.example` 或本地 `frontend/.env` 覆盖 `VITE_API_BASE_URL`。
 
+图谱查询默认走本地 CSV 快照；如需切换为 Neo4j 在线查询，可在后端环境变量中设置：
+
+- `GRAPH_QUERY_SOURCE=neo4j`
+- 可选：`GRAPH_QUERY_FALLBACK_TO_CSV=true`（Neo4j 不可用时自动回退）
+
 ## 当前系统能力
 
 - 图谱浏览与实体检索

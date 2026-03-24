@@ -1,0 +1,22 @@
+# 本体定义 V1
+
+## 实体类型
+- SYNDROME（证候）
+- SYMPTOM（症状）
+- FORMULA（方剂）
+- HERB（中药）
+- THERAPY（治法）
+- ADMINISTRATION（服法）
+- CLAUSE（条文）
+
+## 关系类型
+- SYNDROME_HAS_SYMPTOM
+- SYNDROME_TO_FORMULA
+- SYNDROME_TO_THERAPY（人工补充）
+- FORMULA_CONTAINS_HERB
+- FORMULA_HAS_ADMINISTRATION
+- CLAUSE_MENTIONS_ENTITY
+
+## 说明
+- 本版本用于 MVP 阶段，优先保证可训练、可建图、可展示。
+- 低频实体和复杂条件关系后续迭代补充。

@@ -25,6 +25,7 @@ def load_corpus_entries() -> list[dict[str, object]]:
             {
                 "id": index,
                 "text": text,
+                "text_length": len(text),
                 "formula_name": formula_match.group(1) if formula_match else None,
                 "is_formula_related": bool(formula_match),
             }
@@ -52,12 +53,61 @@ def build_overview_payload() -> dict[str, object]:
     }
 
 
-def search_corpus(keyword: str, limit: int = 20) -> dict[str, object]:
+def search_corpus(
+    keyword: str = "",
+    limit: int = 20,
+    page: int = 1,
+    page_size: int | None = None,
+    formula_related: bool | None = None,
+    sort_by: str = "id",
+    sort_order: str = "asc",
+) -> dict[str, object]:
     entries = load_corpus_entries()
-    matches = [entry for entry in entries if keyword in str(entry["text"])]
+    normalized_keyword = keyword.strip()
+    safe_page = max(1, int(page))
+    safe_page_size = max(1, min(int(page_size or limit), 100))
+    normalized_order = "desc" if str(sort_order).lower() == "desc" else "asc"
+    normalized_sort_by = str(sort_by or "id").strip() or "id"
+
+    matches = []
+    for entry in entries:
+        text = str(entry["text"])
+        if normalized_keyword and normalized_keyword not in text:
+            continue
+        if formula_related is True and not bool(entry["is_formula_related"]):
+            continue
+        if formula_related is False and bool(entry["is_formula_related"]):
+            continue
+        matches.append(entry)
+
+    if normalized_sort_by == "text_length":
+        matches.sort(key=lambda item: (int(item["text_length"]), int(item["id"])), reverse=normalized_order == "desc")
+    elif normalized_sort_by == "formula_name":
+        matches.sort(
+            key=lambda item: (str(item.get("formula_name") or ""), int(item["id"])),
+            reverse=normalized_order == "desc",
+        )
+    else:
+        normalized_sort_by = "id"
+        matches.sort(key=lambda item: int(item["id"]), reverse=normalized_order == "desc")
+
+    total = len(matches)
+    total_pages = (total + safe_page_size - 1) // safe_page_size if total else 0
+    if total_pages and safe_page > total_pages:
+        safe_page = total_pages
+    offset = (safe_page - 1) * safe_page_size
+    paged_results = matches[offset : offset + safe_page_size]
 
     return {
-        "keyword": keyword,
-        "total": len(matches),
-        "results": matches[:limit],
+        "keyword": normalized_keyword,
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_page_size,
+        "total_pages": total_pages,
+        "has_next": safe_page < total_pages,
+        "has_previous": safe_page > 1 and total_pages > 0,
+        "formula_related": formula_related,
+        "sort_by": normalized_sort_by,
+        "sort_order": normalized_order,
+        "results": paged_results,
     }

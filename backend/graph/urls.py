@@ -1,6 +1,8 @@
 from django.urls import path
 
 from .views import (
+    GraphClauseDetailView,
+    GraphClauseSearchView,
     GraphEntityDetailView,
     GraphEntityPathwaysView,
     GraphEntitySearchView,
@@ -23,6 +25,8 @@ urlpatterns = [
     path("manual-relations/<str:override_id>/", GraphManualRelationDeleteView.as_view(), name="graph-manual-relation-delete"),
     path("datasets/reviewed/refresh/", ReviewedGraphRefreshView.as_view(), name="reviewed-graph-refresh"),
     path("showcase/", GraphShowcaseView.as_view(), name="graph-showcase"),
+    path("clauses/", GraphClauseSearchView.as_view(), name="graph-clause-search"),
+    path("clauses/<path:clause_id>/", GraphClauseDetailView.as_view(), name="graph-clause-detail"),
     path("entities/", GraphEntitySearchView.as_view(), name="graph-entity-search"),
     path("entities/<path:entity_id>/pathways/", GraphEntityPathwaysView.as_view(), name="graph-entity-pathways"),
     path("entities/<path:entity_id>/", GraphEntityDetailView.as_view(), name="graph-entity-detail"),

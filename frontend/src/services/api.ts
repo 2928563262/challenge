@@ -1,6 +1,8 @@
 ﻿import axios from "axios";
 
 import type {
+  AnnotationCandidateBatchStatusResponse,
+  AnnotationCandidateDeleteResponse,
   AnnotationCandidateListResponse,
   AnnotationCandidatePayload,
   AnnotationCandidateRecord,
@@ -8,6 +10,8 @@ import type {
   AnnotationCandidateUpdatePayload,
   CorpusOverview,
   CorpusSearchResult,
+  GraphClauseDetail,
+  GraphClauseSearchResponse,
   GraphActivationResponse,
   GraphNeo4jSyncResponse,
   GraphNeo4jSyncStatus,
@@ -40,9 +44,23 @@ export async function fetchOverview() {
   return response.data;
 }
 
-export async function searchCorpus(keyword: string) {
+export async function searchCorpus(params: {
+  keyword?: string;
+  page?: number;
+  pageSize?: number;
+  formulaRelated?: "all" | "true" | "false";
+  sortBy?: "id" | "text_length" | "formula_name";
+  sortOrder?: "asc" | "desc";
+}) {
   const response = await apiClient.get<CorpusSearchResult>("/corpus/search/", {
-    params: { keyword },
+    params: {
+      keyword: params.keyword || "",
+      page: params.page ?? 1,
+      page_size: params.pageSize ?? 20,
+      formula_related: params.formulaRelated ?? "all",
+      sort_by: params.sortBy ?? "id",
+      sort_order: params.sortOrder ?? "asc",
+    },
   });
   return response.data;
 }
@@ -171,6 +189,29 @@ export async function fetchGraphEntityPathways(entityId: string, limit = 20) {
   return response.data;
 }
 
+export async function searchGraphClauses(params: {
+  keyword?: string;
+  entryType?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const response = await apiClient.get<GraphClauseSearchResponse>("/graph/clauses/", {
+    params: {
+      keyword: params.keyword || "",
+      entry_type: params.entryType || undefined,
+      page: params.page ?? 1,
+      page_size: params.pageSize ?? 20,
+    },
+  });
+  return response.data;
+}
+
+export async function fetchGraphClauseDetail(clauseId: string) {
+  const encodedClauseId = encodeURIComponent(clauseId);
+  const response = await apiClient.get<GraphClauseDetail>(`/graph/clauses/${encodedClauseId}/`);
+  return response.data;
+}
+
 export async function fetchModelSummary() {
   const response = await apiClient.get<ModelSummary>("/model/summary/");
   return response.data;
@@ -265,9 +306,21 @@ export async function saveAnnotationCandidate(payload: AnnotationCandidatePayloa
   return response.data;
 }
 
-export async function fetchAnnotationCandidates(limit = 20, status?: string) {
+export async function fetchAnnotationCandidates(params?: {
+  limit?: number;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+  q?: string;
+}) {
   const response = await apiClient.get<AnnotationCandidateListResponse>("/annotation/candidates/", {
-    params: { limit, status: status || undefined },
+    params: {
+      limit: params?.limit ?? undefined,
+      status: params?.status || undefined,
+      page: params?.page ?? undefined,
+      page_size: params?.pageSize ?? undefined,
+      q: params?.q?.trim() || undefined,
+    },
   });
   return response.data;
 }
@@ -287,5 +340,19 @@ export async function updateAnnotationCandidateStatus(recordId: string, payload:
 export async function updateAnnotationCandidate(recordId: string, payload: AnnotationCandidateUpdatePayload) {
   const encodedRecordId = encodeURIComponent(recordId);
   const response = await apiClient.patch<AnnotationCandidateRecord>(`/annotation/candidates/${encodedRecordId}/`, payload);
+  return response.data;
+}
+
+export async function deleteAnnotationCandidate(recordId: string) {
+  const encodedRecordId = encodeURIComponent(recordId);
+  const response = await apiClient.delete<AnnotationCandidateDeleteResponse>(`/annotation/candidates/${encodedRecordId}/`);
+  return response.data;
+}
+
+export async function batchUpdateAnnotationCandidateStatus(recordIds: string[], status: string) {
+  const response = await apiClient.post<AnnotationCandidateBatchStatusResponse>("/annotation/candidates/batch-status/", {
+    record_ids: recordIds,
+    status,
+  });
   return response.data;
 }

@@ -7,6 +7,8 @@ import { useRoute, useRouter } from "vue-router";
 import StatePanel from "../components/common/StatePanel.vue";
 import { formatEntityTypeLabel, formatRelationTypeLabel, formatStatusLabel } from "../i18n";
 import {
+  batchUpdateAnnotationCandidateStatus,
+  deleteAnnotationCandidate,
   fetchAnnotationCandidateDetail,
   fetchAnnotationCandidates,
   updateAnnotationCandidate,
@@ -55,9 +57,17 @@ const loadingDetail = ref(false);
 const updatingStatus = ref(false);
 const exportingAccepted = ref(false);
 const savingEdits = ref(false);
+const deletingRecord = ref(false);
+const batchingStatus = ref(false);
 const errorMessage = ref("");
 const actionMessage = ref("");
 const statusFilter = ref("all");
+const selectedRecordIds = ref<string[]>([]);
+const keywordFilter = ref("");
+const currentPage = ref(1);
+const pageSize = ref(20);
+const totalRecords = ref(0);
+const totalPages = ref(0);
 
 const editableSourceText = ref("");
 const editableNodes = ref<EditableNode[]>([]);
@@ -70,6 +80,9 @@ const statusOptions = computed(() => [
   { value: "accepted", label: formatStatus("accepted") },
   { value: "rejected", label: formatStatus("rejected") },
 ]);
+
+const hasPreviousPage = computed(() => currentPage.value > 1);
+const hasNextPage = computed(() => currentPage.value < totalPages.value);
 
 const entityTypeOptions = [
   { value: "SYNDROME", label: formatEntityType("SYNDROME") },
@@ -194,17 +207,55 @@ function syncRouteQuery(recordId?: string) {
     query: {
       ...route.query,
       status: statusFilter.value !== "all" ? statusFilter.value : undefined,
+      q: keywordFilter.value.trim() || undefined,
+      page: currentPage.value > 1 ? String(currentPage.value) : undefined,
       recordId: recordId || undefined,
     },
   });
+}
+
+function isRecordSelected(recordId: string) {
+  return selectedRecordIds.value.includes(recordId);
+}
+
+function toggleRecordSelection(recordId: string) {
+  if (isRecordSelected(recordId)) {
+    selectedRecordIds.value = selectedRecordIds.value.filter((item) => item !== recordId);
+    return;
+  }
+  selectedRecordIds.value = [...selectedRecordIds.value, recordId];
+}
+
+function toggleSelectAllVisibleRecords() {
+  const visibleIds = records.value.map((item) => item.record_id);
+  if (!visibleIds.length) {
+    selectedRecordIds.value = [];
+    return;
+  }
+  const isAllSelected = visibleIds.every((recordId) => selectedRecordIds.value.includes(recordId));
+  selectedRecordIds.value = isAllSelected ? [] : [...visibleIds];
+}
+
+function reconcileSelectionWithVisibleRecords() {
+  const visibleIds = new Set(records.value.map((item) => item.record_id));
+  selectedRecordIds.value = selectedRecordIds.value.filter((recordId) => visibleIds.has(recordId));
 }
 
 async function loadList() {
   loadingList.value = true;
   errorMessage.value = "";
   try {
-    const payload = await fetchAnnotationCandidates(30, statusFilter.value === "all" ? undefined : statusFilter.value);
+    const payload = await fetchAnnotationCandidates({
+      status: statusFilter.value === "all" ? undefined : statusFilter.value,
+      page: currentPage.value,
+      pageSize: pageSize.value,
+      q: keywordFilter.value,
+    });
     records.value = payload.results;
+    totalRecords.value = payload.total;
+    currentPage.value = payload.page || currentPage.value;
+    totalPages.value = payload.total_pages || 0;
+    reconcileSelectionWithVisibleRecords();
   } catch {
     errorMessage.value = t("annotation.errors.loadListFailed");
   } finally {
@@ -280,7 +331,7 @@ async function exportAcceptedRecords() {
   errorMessage.value = "";
   actionMessage.value = "";
   try {
-    const payload = await fetchAnnotationCandidates(100, "accepted");
+    const payload = await fetchAnnotationCandidates({ limit: 100, status: "accepted" });
     const exportPayload = {
       exported_at: new Date().toISOString(),
       total: payload.total,
@@ -305,6 +356,8 @@ async function exportAcceptedRecords() {
 
 async function applyFilter(status: string) {
   statusFilter.value = status;
+  currentPage.value = 1;
+  selectedRecordIds.value = [];
   await loadList();
   const nextRecordId = records.value[0]?.record_id || "";
   if (nextRecordId) {
@@ -314,6 +367,89 @@ async function applyFilter(status: string) {
     syncEditorState(null);
   }
   await syncRouteQuery(nextRecordId || undefined);
+}
+
+async function applyKeywordSearch() {
+  currentPage.value = 1;
+  selectedRecordIds.value = [];
+  await loadList();
+  const nextRecordId = records.value[0]?.record_id || "";
+  if (nextRecordId) {
+    await loadDetail(nextRecordId, false);
+  } else {
+    selectedRecord.value = null;
+    syncEditorState(null);
+  }
+  await syncRouteQuery(nextRecordId || undefined);
+}
+
+async function clearKeywordSearch() {
+  if (!keywordFilter.value.trim()) {
+    return;
+  }
+  keywordFilter.value = "";
+  await applyKeywordSearch();
+}
+
+async function goToPage(targetPage: number) {
+  if (targetPage < 1 || targetPage > totalPages.value || targetPage === currentPage.value) {
+    return;
+  }
+  currentPage.value = targetPage;
+  selectedRecordIds.value = [];
+  await loadList();
+  const nextRecordId = records.value[0]?.record_id || "";
+  if (nextRecordId) {
+    await loadDetail(nextRecordId, false);
+  } else {
+    selectedRecord.value = null;
+    syncEditorState(null);
+  }
+  await syncRouteQuery(nextRecordId || undefined);
+}
+
+async function runBatchStatusUpdate(status: string) {
+  if (!selectedRecordIds.value.length) {
+    errorMessage.value = t("annotation.errors.batchNoSelection");
+    return;
+  }
+  batchingStatus.value = true;
+  errorMessage.value = "";
+  actionMessage.value = "";
+  try {
+    const payload = await batchUpdateAnnotationCandidateStatus(selectedRecordIds.value, status);
+    const pipelineMessage = summarizeAutoPipelineRefresh(payload.auto_pipeline_refresh as AnnotationCandidateRecord["auto_pipeline_refresh"]);
+    const graphMessage = summarizeAutoGraphRefresh(payload.auto_graph_refresh as AnnotationCandidateRecord["auto_graph_refresh"]);
+    const combinedMessage = [pipelineMessage, graphMessage].filter(Boolean).join("; ");
+    actionMessage.value = combinedMessage
+      ? `${tf("annotation.messages.batchStatusDone", { count: payload.updated_count, status: formatStatus(status) })} ${combinedMessage}`
+      : tf("annotation.messages.batchStatusDone", { count: payload.updated_count, status: formatStatus(status) });
+
+    selectedRecordIds.value = [];
+    await loadList();
+    if (selectedRecord.value) {
+      const stillExists = records.value.some((item) => item.record_id === selectedRecord.value?.record_id);
+      if (!stillExists) {
+        const nextRecordId = records.value[0]?.record_id || "";
+        if (nextRecordId) {
+          await loadDetail(nextRecordId, false);
+          await syncRouteQuery(nextRecordId);
+        } else {
+          selectedRecord.value = null;
+          syncEditorState(null);
+          await syncRouteQuery();
+        }
+      }
+    }
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      errorMessage.value = String(error.response?.data?.detail || t("annotation.errors.batchStatusFailed"));
+    } else {
+      errorMessage.value = t("annotation.errors.batchStatusFailed");
+    }
+  } finally {
+    batchingStatus.value = false;
+  }
 }
 
 function addNode() {
@@ -475,10 +611,56 @@ async function saveEdits() {
   }
 }
 
+async function deleteCurrentRecord() {
+  if (!selectedRecord.value) {
+    return;
+  }
+  if (!window.confirm(t("annotation.deleteConfirm"))) {
+    return;
+  }
+
+  deletingRecord.value = true;
+  errorMessage.value = "";
+  actionMessage.value = "";
+  const deletingRecordId = selectedRecord.value.record_id;
+  try {
+    await deleteAnnotationCandidate(deletingRecordId);
+    await loadList();
+    if (!records.value.length && currentPage.value > 1) {
+      currentPage.value -= 1;
+      await loadList();
+    }
+    const nextRecordId = records.value[0]?.record_id || "";
+    if (nextRecordId) {
+      await loadDetail(nextRecordId, false);
+      await syncRouteQuery(nextRecordId);
+    } else {
+      selectedRecord.value = null;
+      syncEditorState(null);
+      await syncRouteQuery();
+    }
+    actionMessage.value = tf("annotation.messages.deleteDone", { recordId: deletingRecordId });
+  } catch (error: unknown) {
+    if (axios.isAxiosError(error)) {
+      errorMessage.value = String(error.response?.data?.detail || t("annotation.errors.deleteFailed"));
+    } else {
+      errorMessage.value = t("annotation.errors.deleteFailed");
+    }
+  } finally {
+    deletingRecord.value = false;
+  }
+}
+
 async function applyRouteState() {
   const routeStatus = typeof route.query.status === "string" ? route.query.status : "";
+  const routeKeyword = typeof route.query.q === "string" ? route.query.q : "";
+  const routePage = typeof route.query.page === "string" ? Number.parseInt(route.query.page, 10) : NaN;
   if (routeStatus && statusOptions.value.some((item) => item.value === routeStatus)) {
     statusFilter.value = routeStatus;
+  }
+  keywordFilter.value = routeKeyword || "";
+  if (!Number.isNaN(routePage) && Number.isFinite(routePage) && routePage > 0) {
+    currentPage.value = routePage;
   }
 
   if (!records.value.length) {
@@ -500,6 +682,15 @@ async function applyRouteState() {
 }
 
 onMounted(async () => {
+  const routeStatus = typeof route.query.status === "string" ? route.query.status : "";
+  if (routeStatus && statusOptions.value.some((item) => item.value === routeStatus)) {
+    statusFilter.value = routeStatus;
+  }
+  keywordFilter.value = typeof route.query.q === "string" ? route.query.q : "";
+  const routePage = typeof route.query.page === "string" ? Number.parseInt(route.query.page, 10) : NaN;
+  if (!Number.isNaN(routePage) && Number.isFinite(routePage) && routePage > 0) {
+    currentPage.value = routePage;
+  }
   await loadList();
   await applyRouteState();
 });
@@ -508,8 +699,13 @@ watch(
   () => route.fullPath,
   async () => {
     const routeStatus = typeof route.query.status === "string" ? route.query.status : "";
-    if ((routeStatus || "all") !== statusFilter.value) {
+    const routeKeyword = typeof route.query.q === "string" ? route.query.q : "";
+    const routePage = typeof route.query.page === "string" ? Number.parseInt(route.query.page, 10) : 1;
+    const normalizedRoutePage = Number.isFinite(routePage) && routePage > 0 ? routePage : 1;
+    if ((routeStatus || "all") !== statusFilter.value || routeKeyword !== keywordFilter.value || normalizedRoutePage !== currentPage.value) {
       statusFilter.value = routeStatus || "all";
+      keywordFilter.value = routeKeyword || "";
+      currentPage.value = normalizedRoutePage;
       await loadList();
     }
     await applyRouteState();
@@ -554,6 +750,29 @@ watch(
           </button>
         </div>
 
+        <form class="annotation-search-row" @submit.prevent="applyKeywordSearch">
+          <input v-model="keywordFilter" type="text" :placeholder="t('annotation.searchPlaceholder')" />
+          <button type="submit" class="ghost-button mini-button">{{ t("annotation.searchAction") }}</button>
+          <button type="button" class="ghost-button mini-button" @click="clearKeywordSearch">{{ t("annotation.clearSearchAction") }}</button>
+        </form>
+
+        <div class="annotation-batch-toolbar">
+          <button type="button" class="ghost-button mini-button" @click="toggleSelectAllVisibleRecords">
+            {{ t("annotation.selectAllVisible") }}
+          </button>
+          <span>{{ tf("annotation.selectedCount", { count: selectedRecordIds.length }) }}</span>
+          <span>{{ tf("annotation.totalCount", { count: totalRecords }) }}</span>
+          <button type="button" class="ghost-button mini-button" :disabled="batchingStatus" @click="runBatchStatusUpdate('accepted')">
+            {{ batchingStatus ? t("annotation.batchRunning") : t("annotation.batchAccept") }}
+          </button>
+          <button type="button" class="ghost-button mini-button" :disabled="batchingStatus" @click="runBatchStatusUpdate('reviewed')">
+            {{ t("annotation.batchReview") }}
+          </button>
+          <button type="button" class="ghost-button mini-button" :disabled="batchingStatus" @click="runBatchStatusUpdate('rejected')">
+            {{ t("annotation.batchReject") }}
+          </button>
+        </div>
+
         <StatePanel v-if="errorMessage && !selectedRecord" tone="error">
           <p>{{ errorMessage }}</p>
         </StatePanel>
@@ -572,9 +791,25 @@ watch(
             <div class="entity-result-head">
               <strong>{{ record.record_id }}</strong>
               <span>{{ formatStatus(record.status) }}</span>
+              <input
+                class="annotation-record-checkbox"
+                type="checkbox"
+                :checked="isRecordSelected(record.record_id)"
+                @click.stop="toggleRecordSelection(record.record_id)"
+              />
             </div>
             <p>{{ record.text_preview }}</p>
             <p>{{ tf("annotation.recordSummary", { nodeCount: record.node_count, edgeCount: record.edge_count }) }}</p>
+          </button>
+        </div>
+
+        <div class="annotation-pagination-row">
+          <button type="button" class="ghost-button mini-button" :disabled="!hasPreviousPage || loadingList" @click="goToPage(currentPage - 1)">
+            {{ t("annotation.prevPage") }}
+          </button>
+          <span>{{ tf("annotation.pageSummary", { page: currentPage, totalPages: totalPages || 1 }) }}</span>
+          <button type="button" class="ghost-button mini-button" :disabled="!hasNextPage || loadingList" @click="goToPage(currentPage + 1)">
+            {{ t("annotation.nextPage") }}
           </button>
         </div>
       </article>
@@ -585,9 +820,14 @@ watch(
             <p class="panel-kicker">{{ t("annotation.detailKicker") }}</p>
             <h2>{{ t("annotation.detailTitle") }}</h2>
           </div>
-          <button type="button" class="primary-button" :disabled="!selectedRecord || savingEdits" @click="saveEdits">
-            {{ savingEdits ? t("common.saving") : t("annotation.saveEdits") }}
-          </button>
+          <div class="session-action-group">
+            <button type="button" class="ghost-button danger-button" :disabled="!selectedRecord || deletingRecord" @click="deleteCurrentRecord">
+              {{ deletingRecord ? t("annotation.deleting") : t("annotation.deleteRecord") }}
+            </button>
+            <button type="button" class="primary-button" :disabled="!selectedRecord || savingEdits" @click="saveEdits">
+              {{ savingEdits ? t("common.saving") : t("annotation.saveEdits") }}
+            </button>
+          </div>
         </div>
 
         <StatePanel v-if="errorMessage && selectedRecord" tone="error">
