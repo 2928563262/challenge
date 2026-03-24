@@ -4,8 +4,8 @@ import AnnotationReviewView from "../views/AnnotationReviewView.vue";
 import GraphExplorerView from "../views/GraphExplorerView.vue";
 import HomeView from "../views/HomeView.vue";
 import ModelWorkbenchView from "../views/ModelWorkbenchView.vue";
+import QAPageView from "../views/QAPageView.vue";
 import StatisticsView from "../views/StatisticsView.vue";
-// import QAPageView from "../views/QAPageView.vue"; // Temporarily disabled due to missing QA types
 
 const router = createRouter({
   history: createWebHistory(),
@@ -21,6 +21,16 @@ const router = createRouter({
       component: GraphExplorerView,
     },
     {
+      path: "/qa",
+      name: "qa",
+      component: QAPageView,
+    },
+    {
+      path: "/stats",
+      name: "stats",
+      component: StatisticsView,
+    },
+    {
       path: "/models",
       name: "models",
       component: ModelWorkbenchView,
@@ -30,16 +40,6 @@ const router = createRouter({
       name: "annotations",
       component: AnnotationReviewView,
     },
-    {
-      path: "/stats",
-      name: "stats",
-      component: StatisticsView,
-    },
-    // {
-    //   path: "/qa",
-    //   name: "qa",
-    //   component: QAPageView,
-    // },
   ],
 });
 

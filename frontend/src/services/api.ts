@@ -13,6 +13,7 @@ import type {
   GraphSummary,
   ModelSummary,
   NerPrediction,
+  QAAnswer,
   RelationPrediction,
 } from "../types/api";
 
@@ -109,5 +110,10 @@ export async function fetchAnnotationCandidateDetail(recordId: string) {
 export async function updateAnnotationCandidateStatus(recordId: string, payload: AnnotationCandidateStatusPayload) {
   const encodedRecordId = encodeURIComponent(recordId);
   const response = await apiClient.patch<AnnotationCandidateRecord>(`/annotation/candidates/${encodedRecordId}/`, payload);
+  return response.data;
+}
+
+export async function askQuestion(question: string) {
+  const response = await apiClient.post<QAAnswer>("/qa/ask/", { question });
   return response.data;
 }

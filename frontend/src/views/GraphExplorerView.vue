@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import axios from "axios";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import {
@@ -13,6 +13,7 @@ import {
   searchCorpus,
   searchGraphEntities,
 } from "../services/api";
+import * as echarts from 'echarts';
 import type {
   CorpusEntry,
   GraphEntity,
@@ -105,6 +106,12 @@ const relationPairPriority: Record<string, number> = {
   "FORMULA->ADMINISTRATION": 3,
 };
 
+// 动态统计图表引用
+const searchTypeChartRef = ref<HTMLElement | null>(null);
+const searchTopEntitiesRef = ref<HTMLElement | null>(null);
+let searchTypeChart: echarts.ECharts | null = null;
+let searchTopEntitiesChart: echarts.ECharts | null = null;
+
 const entityTypeLabels: Record<string, string> = {
   FORMULA: "方剂",
   SYNDROME: "证候",
@@ -126,6 +133,224 @@ const quickStats = computed(() => {
 });
 
 const predictedEntities = computed(() => nerPrediction.value?.entities ?? []);
+
+
+// 搜索结果的实体类型分布（动态统计）
+const searchEntityTypeData = computed(() => {
+  if (!searchResults.value || searchResults.value.length === 0) return [];
+  
+  const counts: Record<string, number> = {};
+  searchResults.value.forEach(entity => {
+    counts[entity.entity_type] = (counts[entity.entity_type] || 0) + 1;
+  });
+  
+  return Object.entries(counts).map(([type, count]) => ({
+    name: entityTypeLabels[type] || type,
+    value: count
+  }));
+});
+
+// 搜索结果的高频实体（按提及次数）
+const searchTopEntitiesData = computed(() => {
+  if (!searchResults.value || searchResults.value.length === 0) return [];
+  
+  return searchResults.value
+    .map(entity => ({
+      name: entity.name,
+      value: entity.mention_count,
+      type: entityTypeLabels[entity.entity_type] || entity.entity_type
+    }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 5); // TOP 5
+});
+
+// 搜索统计摘要
+const searchStatsSummary = computed(() => {
+  if (!searchResults.value) return { total: 0, types: 0 };
+  const types = new Set(searchResults.value.map(e => e.entity_type)).size;
+  return {
+    total: searchTotal.value || searchResults.value.length,
+    types
+  };
+});
+
+// 初始化/更新搜索类型分布图表
+function initSearchTypeChart() {
+  if (!searchTypeChartRef.value) return;
+  
+  if (!searchTypeChart) {
+    searchTypeChart = echarts.init(searchTypeChartRef.value);
+  }
+  
+  const data = searchEntityTypeData.value;
+  const option: echarts.EChartsOption = {
+    title: {
+      text: '实体类型分布',
+      left: 'center',
+      textStyle: {
+        fontSize: 14,
+        color: '#8c5e34'
+      }
+    },
+    tooltip: {
+      trigger: 'item',
+      formatter: '{a} <br/>{b}: {c} ({d}%)'
+    },
+    legend: {
+      bottom: 10,
+      textStyle: {
+        fontSize: 12,
+        color: '#5d4a38'
+      }
+    },
+    series: [
+      {
+        name: '实体类型',
+        type: 'pie',
+        radius: ['40%', '70%'],
+        avoidLabelOverlap: false,
+        itemStyle: {
+          borderRadius: 10,
+          borderColor: '#fff',
+          borderWidth: 2
+        },
+        label: {
+          show: true,
+          formatter: '{b}\n{d}%',
+          fontSize: 12,
+          color: '#5d4a38'
+        },
+        labelLine: {
+          show: true,
+          lineStyle: {
+            color: '#8c5e34'
+          }
+        },
+        data: data.map(item => ({
+          value: item.value,
+          name: item.name,
+          itemStyle: {
+            color: ['#7d4f2b', '#6a7d65', '#8c5e34', '#9b7653', '#a0826d'][Math.floor(Math.random() * 5)]
+          }
+        }))
+      }
+    ]
+  };
+  
+  searchTypeChart.setOption(option);
+}
+
+// 初始化/更新高频实体图表
+function initSearchTopEntitiesChart() {
+  if (!searchTopEntitiesRef.value) return;
+  
+  if (!searchTopEntitiesChart) {
+    searchTopEntitiesChart = echarts.init(searchTopEntitiesRef.value);
+  }
+  
+  const data = searchTopEntitiesData.value;
+  const option: echarts.EChartsOption = {
+    title: {
+      text: '高频实体TOP5',
+      left: 'center',
+      textStyle: {
+        fontSize: 14,
+        color: '#8c5e34'
+      }
+    },
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: {
+        type: 'shadow'
+      },
+      formatter: (params: any) => {
+        const item = params[0];
+        return `${item.name}<br/>提及次数: ${item.value}<br/>类型: ${data[item.dataIndex]?.type || ''}`;
+      }
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '15%',
+      top: '20%',
+      containLabel: true
+    },
+    xAxis: {
+      type: 'value',
+      name: '提及次数',
+      nameTextStyle: {
+        fontSize: 11,
+        color: '#8c5e34'
+      },
+      axisLabel: {
+        fontSize: 11,
+        color: '#5d4a38'
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#8c5e34'
+        }
+      }
+    },
+    yAxis: {
+      type: 'category',
+      data: data.map(item => item.name).reverse(),
+      axisLabel: {
+        fontSize: 11,
+        color: '#5d4a38',
+        width: 60,
+        overflow: 'truncate'
+      },
+      axisLine: {
+        lineStyle: {
+          color: '#8c5e34'
+        }
+      }
+    },
+    series: [
+      {
+        name: '提及次数',
+        type: 'bar',
+        data: data.map(item => item.value).reverse(),
+        itemStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+            { offset: 0, color: '#a0826d' },
+            { offset: 1, color: '#7d4f2b' }
+          ]),
+          borderRadius: [0, 8, 8, 0]
+        },
+        label: {
+          show: true,
+          position: 'right',
+          fontSize: 11,
+          color: '#5d4a38'
+        }
+      }
+    ]
+  };
+  
+  searchTopEntitiesChart.setOption(option);
+}
+
+// 更新所有统计图表
+function updateCharts() {
+  // 使用 setTimeout 确保 DOM 已经更新
+  setTimeout(() => {
+    if (searchResults.value.length > 0) {
+      initSearchTypeChart();
+      initSearchTopEntitiesChart();
+    } else {
+      // 清空图表
+      if (searchTypeChart) {
+        searchTypeChart.clear();
+      }
+      if (searchTopEntitiesChart) {
+        searchTopEntitiesChart.clear();
+      }
+    }
+  }, 100);
+}
+
 
 const predictedTypeBreakdown = computed(() => {
   const counts = predictedEntities.value.reduce<Record<string, number>>((accumulator, entity) => {
@@ -182,7 +407,6 @@ const batchRelationPairs = computed(() => {
 });
 const canRunBatchRelation = computed(() => Boolean(batchRelationPairs.value.length > 0 && relationInputText.value.trim()));
 const selectedBatchPairs = ref<Set<string>>(new Set());
-const selectedBatchCount = computed(() => selectedBatchPairs.value.size);
 
 function toggleBatchPair(pairKey: string) {
   const newSet = new Set(selectedBatchPairs.value);
@@ -494,6 +718,9 @@ async function runSearch(updateRoute = true) {
     } else {
       selectedEntityDetail.value = null;
     }
+    
+    // 更新统计图表
+    updateCharts();
   } catch {
     searchError.value = "检索失败，请检查后端服务、图谱接口或跨域配置。";
   } finally {
@@ -759,7 +986,22 @@ onMounted(async () => {
   await Promise.all([loadGraphSummary(), loadShowcase()]);
   await applyRouteState();
   await runNerPrediction();
+  
+  // 监听窗口大小变化，调整图表尺寸
+  window.addEventListener('resize', handleResize);
 });
+
+onUnmounted(() => {
+  window.removeEventListener('resize', handleResize);
+  // 销毁图表实例
+  searchTypeChart?.dispose();
+  searchTopEntitiesChart?.dispose();
+});
+
+function handleResize() {
+  searchTypeChart?.resize();
+  searchTopEntitiesChart?.resize();
+}
 
 watch(
   () => route.fullPath,
@@ -1084,59 +1326,33 @@ watch(
         </div>
       </article>
 
-      <article class="panel network-panel">
+      <article class="panel stats-panel">
         <div class="panel-header compact-header">
           <div>
-            <p class="panel-kicker">Relation Preview</p>
-            <h2>关系网络概览</h2>
+            <p class="panel-kicker">Search Statistics</p>
+            <h2>搜索动态统计</h2>
           </div>
         </div>
 
-        <p v-if="graphError" class="status-text error">{{ graphError }}</p>
-        <p v-else-if="loadingEntityDetail" class="status-text">正在加载实体详情...</p>
-        <p v-else-if="!selectedEntityDetail" class="status-text">先检索并选择一个实体，系统会展示它的关联关系与原文证据。</p>
-
+        <p v-if="searchResults.length === 0" class="status-text">执行搜索后，这里会显示实体类型分布和高频实体 TOP5 图表。</p>
         <template v-else>
-          <div class="entity-focus-card">
-            <div>
-              <p class="entity-type-tag">{{ formatEntityType(selectedEntityDetail.entity.entity_type) }}</p>
-              <h3>{{ selectedEntityDetail.entity.name }}</h3>
+          <div class="stats-summary-row">
+            <div class="mini-stat-item">
+              <span>实体总数</span>
+              <strong>{{ searchStatsSummary.total }}</strong>
             </div>
-            <div class="focus-metrics">
-              <span>入边 {{ selectedEntityDetail.stats.incoming_relation_count }}</span>
-              <span>出边 {{ selectedEntityDetail.stats.outgoing_relation_count }}</span>
-              <span>证据 {{ selectedEntityDetail.stats.mention_count }}</span>
-            </div>
-          </div>
-
-          <div class="network-map">
-            <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
-              <line v-for="node in networkNodes.slice(1)" :key="`${selectedEntityDetail.entity.entity_id}-${node.entity.entity_id}`" x1="50" y1="50" :x2="node.x" :y2="node.y" class="network-line" />
-            </svg>
-
-            <div v-for="node in networkNodes" :key="node.entity.entity_id" class="network-node" :class="node.accent" :style="{ left: `${node.x}%`, top: `${node.y}%` }">
-              <strong>{{ node.entity.name }}</strong>
-              <span>{{ formatEntityType(node.entity.entity_type) }}</span>
+            <div class="mini-stat-item">
+              <span>类型数量</span>
+              <strong>{{ searchStatsSummary.types }}</strong>
             </div>
           </div>
 
-          <div class="relation-columns">
-            <div class="relation-column">
-              <p class="column-title">典型链路</p>
-              <div class="chain-list">
-                <div v-for="item in chainSummary" :key="item" class="chain-item">{{ item }}</div>
-              </div>
+          <div class="charts-grid">
+            <div class="chart-container">
+              <div ref="searchTypeChartRef" class="chart-box"></div>
             </div>
-
-            <div class="relation-column">
-              <p class="column-title">主要关系</p>
-              <div class="relation-list">
-                <div v-for="relation in [...selectedEntityDetail.outgoing_relations, ...selectedEntityDetail.incoming_relations].slice(0, 8)" :key="`${relation.direction}-${relation.relation_type}-${relation.related_entity.entity_id}`" class="relation-item">
-                  <span>{{ relation.direction === 'outgoing' ? '出边' : '入边' }}</span>
-                  <strong>{{ formatRelationType(relation.relation_type) }}</strong>
-                  <p>{{ relation.related_entity.name }} · 证据 {{ relation.evidence_count }}</p>
-                </div>
-              </div>
+            <div class="chart-container">
+              <div ref="searchTopEntitiesRef" class="chart-box"></div>
             </div>
           </div>
         </template>

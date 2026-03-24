@@ -201,3 +201,11 @@ export interface AnnotationCandidateListResponse {
   limit: number;
   results: AnnotationCandidateRecord[];
 }
+
+export interface QAAnswer {
+  answer: string;
+  confidence: number;
+  entities?: NerPredictionEntity[];
+  related_entities?: GraphEntity[];
+  cypher?: string | null;
+}
