@@ -253,7 +253,7 @@ function renderFormulaHerbGraph() {
     id: node.id,
     name: node.name,
     category: node.type === "formula" ? 0 : 1,
-    symbolSize: node.type === "formula" ? 34 : 18,
+    symbolSize: node.type === "formula" ? 52 : 30,
     itemStyle: { color: node.type === "formula" ? "#8c5e34" : "#5b8c6a" },
   }));
 
@@ -273,8 +273,8 @@ function renderFormulaHerbGraph() {
           layout: "force",
           roam: true,
           draggable: true,
-          force: { repulsion: 170, edgeLength: [40, 120] },
-          label: { show: true, color: "#2f2218", fontSize: 11 },
+          force: { repulsion: 240, edgeLength: [56, 140] },
+          label: { show: true, color: "#2f2218", fontSize: 13 },
           data: nodes,
           links: network.edges.map((edge) => ({ source: edge.source, target: edge.target })),
           categories: [{ name: "方剂" }, { name: "中药" }],
@@ -378,11 +378,18 @@ function renderEntityMatrixChart() {
           return `条文 ${matrix.articles[y]}<br/>实体 ${matrix.entities[x]}<br/>提及 ${val} 次`;
         },
       },
-      grid: { left: 84, right: 18, top: 18, bottom: 56 },
+      grid: { left: 84, right: 94, top: 18, bottom: 92 },
       xAxis: {
         type: "category",
         data: matrix.entities,
-        axisLabel: { rotate: 28, color: "#5d4a38", interval: 0 },
+        axisLabel: {
+          rotate: 38,
+          margin: 14,
+          color: "#5d4a38",
+          interval: 0,
+          width: 72,
+          overflow: "truncate",
+        },
       },
       yAxis: {
         type: "category",
@@ -392,9 +399,10 @@ function renderEntityMatrixChart() {
       visualMap: {
         min: 0,
         max: maxValue,
-        orient: "horizontal",
-        left: "center",
-        bottom: 8,
+        orient: "vertical",
+        right: 10,
+        top: "middle",
+        calculable: true,
         inRange: {
           color: ["#f7efe2", "#d6b894", "#8c5e34"],
         },
@@ -531,7 +539,7 @@ onUnmounted(() => {
       </article>
       <article class="panel chart-panel">
         <h3>条文-实体热力矩阵</h3>
-        <div ref="entityMatrixChartRef" class="chart-host"></div>
+        <div ref="entityMatrixChartRef" class="chart-host chart-host-matrix"></div>
       </article>
     </section>
   </main>
@@ -619,6 +627,10 @@ onUnmounted(() => {
   min-height: 420px;
 }
 
+.chart-host-matrix {
+  min-height: 380px;
+}
+
 @media (max-width: 1080px) {
   .stats-header {
     flex-direction: column;
@@ -631,6 +643,10 @@ onUnmounted(() => {
 
   .chart-host-large {
     min-height: 360px;
+  }
+
+  .chart-host-matrix {
+    min-height: 340px;
   }
 }
 </style>
