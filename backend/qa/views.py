@@ -1,220 +1,239 @@
 from __future__ import annotations
 
+from typing import Any
+
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from graph.services import GraphDataUnavailableError, get_entity_detail, load_graph_data, search_entities
 from modeling.services import predict_ner
-from graph.services import search_entities, get_entity_detail
 
 
 class AskQuestionView(APIView):
     """
-    智能问答接口
+    基于图谱的问答接口（当前为模板化回答）。
 
     流程：
-    1. 使用 NER 识别问题中的实体（如失败则降级为关键词匹配）
-    2. 在知识图谱中搜索相关实体
-    3. 获取实体的详细关系图谱
-    4. 组织成自然语言答案
+    1. 尝试 NER 识别问题实体；
+    2. 图谱检索相关实体并去重；
+    3. 拉取主实体详情（关系 + 原文证据）；
+    4. 组装中文回答。
     """
 
     def post(self, request):
         question = str(request.data.get("question") or "").strip()
         if not question:
-            return Response({"detail": "question is required."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": "question 不能为空。"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Step 1: 尝试用 NER 识别问题中的实体
-            entities = []
-            try:
-                ner_result = predict_ner(question)
-                entities = ner_result.get("entities", [])
-            except Exception:
-                # NER 失败（如GLM API未配置），降级为关键词提取
-                entities = self._extract_entities_from_question(question)
-
-            # 如果没有识别到实体，直接返回提示
+            entities = self._extract_entities(question)
             if not entities:
-                return Response({
-                    "answer": "抱歉，我无法在你输入的问题中识别到相关的实体（如方剂、症状、证候等）。请尝试使用更明确的术语，例如「桂枝汤」、「太阳病」等。",
-                    "confidence": 0.0,
-                    "entities": [],
-                    "related_entities": [],
-                })
-
-            # Step 2: 在知识图谱中搜索这些实体
-            related_entities = []
-            for entity in entities:
-                # 根据识别到的实体类型和文本搜索
-                results = search_entities(
-                    keyword=entity["text"],
-                    entity_type=entity["type"],
-                    limit=5
+                return Response(
+                    {
+                        "answer": "未在问题中识别到有效实体。请尽量使用明确术语，如“桂枝汤”“中风”“发热”。",
+                        "confidence": 0.0,
+                        "entities": [],
+                        "related_entities": [],
+                        "cypher": None,
+                    }
                 )
-                related_entities.extend(results.get("results", []))
 
-            # 去重（按 entity_id）
-            seen = set()
-            unique_entities = []
-            for e in related_entities:
-                if e["entity_id"] not in seen:
-                    seen.add(e["entity_id"])
-                    unique_entities.append(e)
+            related_entities = self._search_related_entities(entities)
+            if not related_entities:
+                return Response(
+                    {
+                        "answer": "图谱中没有检索到相关实体，请换一个术语再试。",
+                        "confidence": 0.0,
+                        "entities": entities,
+                        "related_entities": [],
+                        "cypher": None,
+                    }
+                )
 
-            # Step 3: 获取第一个（最相关）实体的详细信息
-            if unique_entities:
-                main_entity = unique_entities[0]
-                detail = get_entity_detail(main_entity["entity_id"], relation_limit=10, evidence_limit=3)
+            main_entity = related_entities[0]
+            detail = get_entity_detail(str(main_entity["entity_id"]), relation_limit=10, evidence_limit=3)
+            answer = self._build_answer(main_entity=main_entity, detail=detail)
+            confidence = self._calculate_confidence(main_entity=main_entity, detail=detail)
 
-                # Step 4: 组织答案
-                answer = self._build_answer(question, main_entity, detail, len(entities))
-                confidence = self._calculate_confidence(main_entity, detail, len(entities))
-
-                return Response({
+            return Response(
+                {
                     "answer": answer,
                     "confidence": confidence,
                     "entities": entities,
-                    "related_entities": unique_entities[:5],
-                    "cypher": None,  # 可选：记录使用的查询语句
-                })
-
-            return Response({
-                "answer": "抱歉，知识图谱中没有找到相关的内容。",
-                "confidence": 0.0,
-                "entities": entities,
-                "related_entities": [],
-            })
-
-        except Exception as exc:
-            return Response(
-                {"detail": f"问答处理失败: {str(exc)}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                    "related_entities": related_entities[:5],
+                    "cypher": None,
+                }
             )
+        except GraphDataUnavailableError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as exc:
+            return Response({"detail": f"问答处理失败：{exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    def _extract_entities_from_question(self, question: str) -> list[dict]:
-        """
-        从问题中提取实体（降级方案）
-        简单匹配图谱中存在的实体名称
-        """
-        from graph.services import load_graph_data
+    def _extract_entities(self, question: str) -> list[dict[str, Any]]:
+        try:
+            ner_result = predict_ner(question)
+            ner_entities = ner_result.get("entities", [])
+            if ner_entities:
+                return self._dedupe_prediction_entities(ner_entities)
+        except Exception:
+            pass
+        return self._extract_entities_from_graph(question)
 
-        # 加载图谱实体
+    @staticmethod
+    def _dedupe_prediction_entities(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for entity in entities:
+            entity_text = str(entity.get("text") or "").strip()
+            entity_type = str(entity.get("type") or "").strip()
+            start = int(entity.get("start") or 0)
+            end = int(entity.get("end") or 0)
+            if not entity_text or not entity_type or end <= start:
+                continue
+            key = f"{entity_type}|{entity_text}|{start}|{end}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append({"type": entity_type, "text": entity_text, "start": start, "end": end})
+        return deduped
+
+    @staticmethod
+    def _extract_entities_from_graph(question: str) -> list[dict[str, Any]]:
         data = load_graph_data()
-        entities = []
+        entity_rows = sorted(
+            data["entities"].values(),
+            key=lambda item: len(str(item.get("name") or "")),
+            reverse=True,
+        )
 
-        # 遍历图谱实体，看问题中是否包含实体名
-        for entity in data["entities"].values():
-            if entity["name"] in question:
-                entities.append({
-                    "type": entity["entity_type"],
-                    "text": entity["name"],
-                    "start": question.find(entity["name"]),
-                    "end": question.find(entity["name"]) + len(entity["name"]),
-                })
+        matched: list[dict[str, Any]] = []
+        seen_text: set[str] = set()
+        for entity in entity_rows:
+            name = str(entity.get("name") or "").strip()
+            if not name or name in seen_text:
+                continue
+            start = question.find(name)
+            if start < 0:
+                continue
+            seen_text.add(name)
+            matched.append(
+                {
+                    "type": str(entity.get("entity_type") or ""),
+                    "text": name,
+                    "start": start,
+                    "end": start + len(name),
+                }
+            )
+        return matched
 
-        # 去重（按文本）
-        seen = set()
-        unique = []
-        for e in entities:
-            if e["text"] not in seen:
-                seen.add(e["text"])
-                unique.append(e)
+    @staticmethod
+    def _search_related_entities(entities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for entity in entities:
+            payload = search_entities(
+                keyword=str(entity.get("text") or ""),
+                entity_type=str(entity.get("type") or ""),
+                limit=5,
+            )
+            for row in payload.get("results", []):
+                entity_id = str(row.get("entity_id") or "")
+                if not entity_id or entity_id in seen_ids:
+                    continue
+                seen_ids.add(entity_id)
+                merged.append(row)
+        return merged
 
-        return unique
+    def _build_answer(self, main_entity: dict[str, Any], detail: dict[str, Any]) -> str:
+        entity_name = str(main_entity.get("name") or "")
+        entity_type = str(main_entity.get("entity_type") or "")
+        type_name = self._translate_entity_type(entity_type)
 
-    def _build_answer(self, question: str, entity: dict, detail: dict, entity_count: int) -> str:
-        """根据图谱信息构建自然语言答案"""
-        entity_type = entity["entity_type"]
-        entity_name = entity["name"]
+        stats = detail.get("stats") or {}
+        incoming = detail.get("incoming_relations") or []
+        outgoing = detail.get("outgoing_relations") or []
+        mentions = detail.get("mentions") or []
 
-        # 中文实体类型映射
-        type_names = {
+        parts: list[str] = []
+        parts.append(f"【{entity_name}】（{type_name}）")
+        parts.append(
+            f"图谱统计：入边 {int(stats.get('incoming_relation_count') or 0)} 条，"
+            f"出边 {int(stats.get('outgoing_relation_count') or 0)} 条，"
+            f"原文提及 {int(stats.get('mention_count') or 0)} 次。"
+        )
+
+        relation_lines: list[str] = []
+        for rel in incoming[:3]:
+            related = rel.get("related_entity") or {}
+            relation_lines.append(
+                f"{related.get('name', '未知实体')} → {entity_name}（{self._translate_relation_type(str(rel.get('relation_type') or ''))}）"
+            )
+        for rel in outgoing[:3]:
+            related = rel.get("related_entity") or {}
+            relation_lines.append(
+                f"{entity_name} → {related.get('name', '未知实体')}（{self._translate_relation_type(str(rel.get('relation_type') or ''))}）"
+            )
+        if relation_lines:
+            parts.append("关键关系：")
+            parts.extend([f"- {line}" for line in relation_lines])
+
+        if mentions:
+            parts.append("原文证据：")
+            for mention in mentions[:2]:
+                clause_text = str(mention.get("clause_text") or "").strip()
+                line_number = mention.get("line_number")
+                if clause_text:
+                    if line_number is not None:
+                        parts.append(f"- “{clause_text}”（行号：{line_number}）")
+                    else:
+                        parts.append(f"- “{clause_text}”")
+
+        parts.append("说明：当前为图谱模板回答，不是通用大模型自由生成。")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _translate_entity_type(entity_type: str) -> str:
+        mapping = {
             "SYNDROME": "证候",
             "SYMPTOM": "症状",
             "FORMULA": "方剂",
             "HERB": "中药",
             "THERAPY": "治法",
+            "ADMINISTRATION": "服法",
         }
-        type_name = type_names.get(entity_type, entity_type)
+        return mapping.get(entity_type, entity_type)
 
-        # 开始构建答案
-        parts = [f"关于“{entity_name}”（{type_name}）："]
-
-        # 添加统计信息
-        stats = detail.get("stats", {})
-        parts.append(f"它在知识图谱中关联 {stats.get('incoming_relation_count', 0)} 条入边、{stats.get('outgoing_relation_count', 0)} 条出边，")
-        parts.append(f"共在 {stats.get('mention_count', 0)} 条原文中提及。")
-
-        # 添加关键关系（入边：谁指向它；出边：它指向谁）
-        incoming = detail.get("incoming_relations", [])
-        outgoing = detail.get("outgoing_relations", [])
-
-        if incoming:
-            top_incoming = incoming[:3]
-            parts.append("\n**相关关系：**")
-            for rel in top_incoming:
-                related = rel["related_entity"]
-                rel_type = self._translate_relation_type(rel["relation_type"])
-                parts.append(f"• {related['name']} → {entity_name}（{rel_type}，证据 {rel['evidence_count']} 条）")
-
-        if outgoing:
-            for rel in outgoing[:3]:
-                related = rel["related_entity"]
-                rel_type = self._translate_relation_type(rel["relation_type"])
-                parts.append(f"• {entity_name} → {related['name']}（{rel_type}，证据 {rel['evidence_count']} 条）")
-
-        # 添加原文证据
-        mentions = detail.get("mentions", [])
-        if mentions:
-            parts.append("\n**原文证据：**")
-            for i, mention in enumerate(mentions[:2], 1):
-                parts.append(f"{i}. “{mention['clause_text']}”")
-                parts.append(f"   （出处：第 {mention['line_number']} 行）")
-
-        parts.append("\n以上信息来自《伤寒论》知识图谱。")
-
-        return "".join(parts)
-
-    def _translate_relation_type(self, rel_type: str) -> str:
-        """将英文关系类型翻译为中文"""
-        relation_map = {
+    @staticmethod
+    def _translate_relation_type(relation_type: str) -> str:
+        mapping = {
             "SYNDROME_HAS_SYMPTOM": "证候具有症状",
             "SYNDROME_TO_FORMULA": "证候对应方剂",
             "FORMULA_CONTAINS_HERB": "方剂包含中药",
-            "FORMULA_HAS_ADMINISTRATION": "方剂具有煎服法",
-            "HAS_SYMPTOM": "具有症状",
-            "INDICATES_SYNDROME": "对应证候",
-            "TREATS_WITH_FORMULA": "使用方剂",
-            "CONTAINS_HERB": "包含中药",
-            "HAS_THERAPY": "具有治法",
-            "FROM_ARTICLE": "来源于条文",
+            "FORMULA_HAS_ADMINISTRATION": "方剂对应服法",
         }
-        return relation_map.get(rel_type, rel_type)
+        return mapping.get(relation_type, relation_type)
 
-    def _calculate_confidence(self, entity: dict, detail: dict, entity_count: int) -> float:
-        """简单计算置信度"""
-        # 根据实体被提及次数、关系数量等因素
-        mention_count = entity.get("mention_count", 0)
-        outgoing_count = detail.get("stats", {}).get("outgoing_relation_count", 0)
-        incoming_count = detail.get("stats", {}).get("incoming_relation_count", 0)
+    @staticmethod
+    def _calculate_confidence(main_entity: dict[str, Any], detail: dict[str, Any]) -> float:
+        mention_count = int(main_entity.get("mention_count") or 0)
+        stats = detail.get("stats") or {}
+        incoming_count = int(stats.get("incoming_relation_count") or 0)
+        outgoing_count = int(stats.get("outgoing_relation_count") or 0)
 
-        # 基础分
-        if mention_count > 10:
+        if mention_count >= 10:
             base = 0.9
-        elif mention_count > 5:
+        elif mention_count >= 5:
             base = 0.8
-        elif mention_count > 0:
+        elif mention_count >= 1:
             base = 0.7
         else:
             base = 0.5
 
-        # 有多条关系链加分
-        if outgoing_count >= 3 and incoming_count >= 2:
-            bonus = 0.1
-        elif outgoing_count >= 2 or incoming_count >= 2:
-            bonus = 0.05
+        if incoming_count + outgoing_count >= 6:
+            bonus = 0.08
+        elif incoming_count + outgoing_count >= 3:
+            bonus = 0.04
         else:
             bonus = 0.0
-
-        return min(0.99, base + bonus)
+        return round(min(0.98, base + bonus), 4)

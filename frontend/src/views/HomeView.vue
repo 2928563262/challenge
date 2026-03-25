@@ -110,10 +110,10 @@ onMounted(async () => {
   <main class="page-shell knowledge-page home-dashboard">
     <section class="hero-panel hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Knowledge Graph MVP</p>
-        <h1>围绕《伤寒论》做一个可检索、可建图、可展示、可答辩的最小闭环系统。</h1>
+        <p class="eyebrow">伤寒论知识图谱系统</p>
+        <h1>《伤寒论》知识图谱与抽取系统</h1>
         <p class="hero-description">
-          首页负责给出项目全貌、核心统计和典型案例入口；图谱浏览页负责实体检索、关系网络概览和原文证据回溯。
+          支持实体检索、关系浏览与原文证据回溯。
         </p>
         <div class="cta-row">
           <RouterLink to="/explore" class="primary-link-button">进入图谱浏览</RouterLink>
@@ -123,13 +123,12 @@ onMounted(async () => {
         </div>
       </div>
 
-      <div class="hero-side showcase-card">
-        <div class="showcase-block">
-          <span>当前主线</span>
-          <strong>文本清洗 → 图谱导入 → 查询展示</strong>
-          <p>这一版优先把 Demo 和答辩所需的主链路跑稳，再继续扩展模型训练和更复杂的语义抽取。</p>
+        <div class="hero-side showcase-card">
+          <div class="showcase-block">
+            <span>当前版本</span>
+            <strong>文本清洗 → 图谱导入 → 查询展示</strong>
+          </div>
         </div>
-      </div>
     </section>
 
     <section class="stats-grid hero-stats">

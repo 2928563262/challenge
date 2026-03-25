@@ -32,6 +32,7 @@ export interface GraphEntity {
   mention_count: number;
   record_count: number;
   first_record_id: string;
+  first_clause_text?: string;
   entry_types: string[];
   labels: string[];
 }

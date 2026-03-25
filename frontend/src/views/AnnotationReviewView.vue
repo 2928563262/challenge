@@ -3,6 +3,7 @@ import axios from "axios";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import HoverHint from "../components/common/HoverHint.vue";
 import {
   fetchAnnotationCandidateDetail,
   fetchAnnotationCandidates,
@@ -458,7 +459,9 @@ watch(
         <p v-if="errorMessage && selectedRecord" class="status-text error">{{ errorMessage }}</p>
         <p v-else-if="actionMessage" class="status-text">{{ actionMessage }}</p>
         <p v-if="loadingDetail" class="status-text">正在加载详情...</p>
-        <p v-else-if="!selectedRecord" class="status-text">先从左侧选择一条候选记录。</p>
+        <div v-else-if="!selectedRecord" class="inline-hint-row">
+          <HoverHint text="先从左侧选择一条候选记录。" aria-label="记录详情提示" />
+        </div>
 
         <template v-else>
           <div class="entity-focus-card annotation-summary-card" :class="selectedRecord.status">

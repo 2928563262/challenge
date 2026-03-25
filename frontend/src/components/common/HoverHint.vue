@@ -33,6 +33,12 @@ withDefaults(
   font-weight: 700;
   cursor: help;
   outline: none;
+  z-index: 2600;
+}
+
+.hover-hint:hover,
+.hover-hint:focus-visible {
+  z-index: 3600;
 }
 
 .hover-hint__bubble {
@@ -49,7 +55,7 @@ withDefaults(
   color: #5d4a38;
   line-height: 1.45;
   font-size: 0.84rem;
-  z-index: 30;
+  z-index: 3700;
   visibility: hidden;
   opacity: 0;
   pointer-events: none;

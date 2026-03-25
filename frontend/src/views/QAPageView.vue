@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { askQuestion } from "../services/api";
@@ -12,56 +12,45 @@ const answer = ref<QAAnswer | null>(null);
 const isLoading = ref(false);
 const errorMessage = ref("");
 
-const suggestionQuestions = ref([
+const suggestionQuestions = [
   "桂枝汤包含哪些中药？",
-  "中风有什么症状？",
-  "桂枝汤主治什么证候？",
-  "发热属于什么证候？",
-]);
+  "中风常见症状有哪些？",
+  "桂枝汤主要对应什么证候？",
+  "发热一般关联哪些证候？",
+];
 
 const isAsking = computed(() => isLoading.value && !answer.value);
-
-async function handleAsk() {
-  const question = questionInput.value.trim();
-  if (!question) {
-    errorMessage.value = "请输入问题";
-    return;
+const hasAnswer = computed(() => Boolean(answer.value));
+const confidencePercent = computed(() => (answer.value ? Math.round(answer.value.confidence * 1000) / 10 : 0));
+const confidenceLevel = computed(() => {
+  const score = answer.value?.confidence ?? 0;
+  if (score >= 0.8) {
+    return "高";
   }
-
-  isLoading.value = true;
-  errorMessage.value = "";
-  answer.value = null;
-
-  try {
-    const result = await askQuestion(question);
-    answer.value = result;
-    // 保留问题在输入框
-  } catch (error: any) {
-    errorMessage.value = error.response?.data?.detail || "提问失败，请检查后端服务是否正常。";
-    console.error("Failed to ask question:", error);
-  } finally {
-    isLoading.value = false;
+  if (score >= 0.6) {
+    return "中";
   }
+  return "低";
+});
+
+function goBack() {
+  router.back();
 }
 
 function useSuggestion(question: string) {
   questionInput.value = question;
 }
 
-function goBack() {
-  router.back();
-}
-
-// 简单的 Markdown 渲染
 function renderMarkdown(text: string): string {
-  if (!text) return "";
+  if (!text) {
+    return "";
+  }
   return text
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/__(.*?)__/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br>');
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/__(.*?)__/g, "<strong>$1</strong>")
+    .replace(/\n/g, "<br>");
 }
 
-// 实体类型格式化
 function formatEntityType(type: string): string {
   const typeMap: Record<string, string> = {
     SYNDROME: "证候",
@@ -74,561 +63,302 @@ function formatEntityType(type: string): string {
   return typeMap[type] || type;
 }
 
-onMounted(() => {
-  // 可以预加载示例
-});
+async function handleAsk() {
+  const question = questionInput.value.trim();
+  if (!question) {
+    errorMessage.value = "请输入问题后再提问。";
+    return;
+  }
+
+  isLoading.value = true;
+  errorMessage.value = "";
+  answer.value = null;
+
+  try {
+    answer.value = await askQuestion(question);
+  } catch (error: any) {
+    errorMessage.value = String(error?.response?.data?.detail || "问答请求失败，请确认后端服务已启动。");
+  } finally {
+    isLoading.value = false;
+  }
+}
 </script>
 
 <template>
-  <main class="page-shell qa-page">
-    <section class="page-header">
-      <button class="back-button" @click="goBack">← 返回</button>
-      <div>
-        <h1>智能问答</h1>
-        <p class="subtitle">基于《伤寒论》知识图谱的自然语言问答系统</p>
+  <main class="page-shell knowledge-page qa-page">
+    <section class="panel qa-hero-panel">
+      <div class="panel-header compact-header">
+        <div>
+          <p class="panel-kicker">问答模块</p>
+          <h1>智能问答</h1>
+          <p class="hero-description">基于《伤寒论》图谱进行实体识别、关系检索与证据回溯。</p>
+        </div>
+        <button type="button" class="ghost-button" @click="goBack">返回上一页</button>
       </div>
     </section>
 
-    <section class="qa-input-section">
-      <div class="input-wrapper">
-        <input
+    <section class="panel qa-input-panel">
+      <div class="qa-input-row">
+        <textarea
           v-model="questionInput"
-          type="text"
-          placeholder="请输入关于《伤寒论》的问题，例如：桂枝汤包含哪些中药？"
-          class="question-input"
-          @keyup.enter="handleAsk"
+          rows="3"
+          class="qa-question-input"
+          placeholder="输入你的问题，例如：桂枝汤包含哪些中药？"
           :disabled="isAsking"
+          @keyup.enter.exact.prevent="handleAsk"
         />
-        <button
-          class="ask-button"
-          @click="handleAsk"
-          :disabled="isAsking || !questionInput.trim()"
-        >
-          {{ isLoading ? "思考中..." : "提问" }}
+        <button type="button" class="primary-button qa-submit-button" :disabled="isAsking || !questionInput.trim()" @click="handleAsk">
+          {{ isAsking ? "分析中..." : "开始提问" }}
         </button>
       </div>
 
-      <div class="suggestions" v-if="suggestionQuestions.length">
-        <span class="suggest-label">试试：</span>
-        <button
-          v-for="q in suggestionQuestions"
-          :key="q"
-          class="suggestion-tag"
-          @click="useSuggestion(q)"
-        >
+      <div class="chip-group qa-suggest-group">
+        <button v-for="q in suggestionQuestions" :key="q" type="button" class="filter-chip" @click="useSuggestion(q)">
           {{ q }}
         </button>
       </div>
+
+      <p v-if="errorMessage" class="status-text error">{{ errorMessage }}</p>
     </section>
 
-    <!-- 错误提示 -->
-    <div v-if="errorMessage" class="error-message">
-      {{ errorMessage }}
-    </div>
+    <section v-if="isAsking" class="panel qa-loading-panel">
+      <div class="qa-loading-dot" />
+      <p>正在解析问题并检索图谱，请稍候...</p>
+    </section>
 
-    <!-- 加载状态 -->
-    <div v-if="isAsking" class="loading-state">
-      <div class="spinner"></div>
-      <p>正在分析问题并查询知识图谱...</p>
-    </div>
+    <section v-else-if="hasAnswer && answer" class="content-grid qa-result-layout">
+      <article class="panel">
+        <div class="panel-header compact-header">
+          <div>
+            <p class="panel-kicker">回答结果</p>
+            <h2>问答结果</h2>
+          </div>
+        </div>
+        <div class="qa-answer-main" v-html="renderMarkdown(answer.answer)" />
 
-    <!-- 答案展示 -->
-    <section v-else-if="answer" class="answer-section">
-      <div class="answer-card">
-        <div class="answer-header">
-          <h3>回答</h3>
-          <span
-            class="confidence-badge"
-            :class="{
-              high: answer.confidence >= 0.8,
-              medium: answer.confidence >= 0.6,
-              low: answer.confidence < 0.6
-            }"
-          >
-            置信度: {{ (answer.confidence * 100).toFixed(1) }}%
-          </span>
+        <details v-if="answer.cypher" class="qa-details">
+          <summary>查看查询语句</summary>
+          <pre>{{ answer.cypher }}</pre>
+        </details>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header compact-header">
+          <div>
+            <p class="panel-kicker">证据检索</p>
+            <h2>识别与证据</h2>
+          </div>
         </div>
 
-        <div class="answer-content">
-          <p class="answer-text" v-html="renderMarkdown(answer.answer)"></p>
+        <div class="qa-confidence-card">
+          <span>置信度（{{ confidenceLevel }}）</span>
+          <strong>{{ confidencePercent }}%</strong>
         </div>
 
-        <div v-if="answer.entities && answer.entities.length > 0" class="entities-section">
-          <h4>识别到的实体</h4>
-          <div class="entity-tags">
-            <span v-for="(entity, idx) in answer.entities" :key="idx" class="entity-tag">
-              {{ entity.text }} <small>({{ formatEntityType(entity.type) }})</small>
+        <div class="qa-side-block" v-if="answer.entities?.length">
+          <h3>识别到的实体</h3>
+          <div class="entity-chip-list">
+            <span v-for="(entity, idx) in answer.entities" :key="`${entity.text}-${entity.start}-${idx}`" class="entity-chip">
+              <strong>{{ entity.text }}</strong>
+              <span>{{ formatEntityType(entity.type) }}</span>
             </span>
           </div>
         </div>
 
-        <div v-if="answer.related_entities && answer.related_entities.length > 0" class="related-section">
-          <h4>知识图谱中的相关实体</h4>
-          <ul class="related-list">
-            <li v-for="entity in answer.related_entities" :key="entity.entity_id">
-              <strong>{{ entity.name }}</strong>
-              <span class="entity-type-tag">{{ formatEntityType(entity.entity_type) }}</span>
-              <small class="mention-count">(提及 {{ entity.mention_count }} 次)</small>
-            </li>
-          </ul>
+        <div class="qa-side-block" v-if="answer.related_entities?.length">
+          <h3>图谱相关实体</h3>
+          <div class="qa-related-list">
+            <div v-for="entity in answer.related_entities" :key="entity.entity_id" class="qa-related-item">
+              <div class="qa-related-head">
+                <strong>{{ entity.name }}</strong>
+                <span>{{ formatEntityType(entity.entity_type) }}</span>
+              </div>
+              <p>提及 {{ entity.mention_count }} 次 · 覆盖 {{ entity.record_count }} 条</p>
+            </div>
+          </div>
         </div>
-
-        <details v-if="answer.cypher" class="cypher-details">
-          <summary>查看查询语句</summary>
-          <pre class="cypher-code">{{ answer.cypher }}</pre>
-        </details>
-        <div v-else class="cypher-hint">
-          <small>注：当前使用模板生成答案，未执行 Cypher 查询。实际查询逻辑位于后端 qa/views.py 中。</small>
-        </div>
-      </div>
+      </article>
     </section>
 
-    <!-- 使用说明 -->
-    <section v-else class="help-section">
-      <div class="help-card">
-        <h3>使用说明</h3>
-        <ul>
-          <li>输入关于《伤寒论》的问题，例如方剂组成、证候症状、治法方药等。</li>
-          <li>系统会自动识别问题中的实体，并在知识图谱中查找相关信息。</li>
-          <li>回答会显示置信度，低置信度结果仅供参考。</li>
-          <li>点击上方"试试"按钮快速体验常见问题。</li>
-        </ul>
-      </div>
+    <section v-else class="panel qa-empty-panel">
+      <h2>使用说明</h2>
+      <p>输入一条和《伤寒论》相关的问题，系统会优先识别实体，再从图谱中检索关系与原文证据。</p>
+      <p>建议优先问：方剂组成、证候-症状、证候-方剂这三类问题，结果更稳定。</p>
     </section>
   </main>
 </template>
 
 <style scoped>
 .qa-page {
-  width: 100%;
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 24px 20px;
-  min-height: 100vh;
-  background: #fafafa;
+  display: grid;
+  gap: 16px;
 }
 
-.page-header {
-  margin-bottom: 24px;
-  position: relative;
-  padding: 20px;
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #e5e5e5;
-}
-
-.page-header h1 {
-  font-size: 1.75rem;
-  margin-bottom: 0.5rem;
-  color: #2a2318;
-  font-weight: 700;
-}
-
-.subtitle {
-  color: #666;
-  font-size: 1rem;
+.qa-hero-panel .panel-header h1 {
   margin: 0;
+  font-size: clamp(1.6rem, 2.4vw, 2rem);
 }
 
-.back-button {
-  position: absolute;
-  left: 20px;
-  top: 20px;
-  padding: 8px 16px;
-  background: #f5f2e9;
-  border: 1px solid rgba(125, 79, 43, 0.2);
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  color: #2a2318;
-  transition: all 0.2s;
-}
-
-.back-button:hover {
-  background: #ede8dc;
-}
-
-.qa-input-section {
-  background: #fff;
-  border: 1px solid #e5e5e5;
-  border-radius: 12px;
-  padding: 24px;
-  margin-bottom: 24px;
-}
-
-.input-wrapper {
-  display: flex;
+.qa-input-panel {
+  display: grid;
   gap: 12px;
-  margin-bottom: 16px;
 }
 
-.question-input {
-  flex: 1;
-  padding: 12px 16px;
-  border: 1px solid #e0e0e0;
-  border-radius: 10px;
-  font-size: 1rem;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
-  background: #fafafa;
-  color: #333;
+.qa-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.qa-question-input {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid rgba(111, 74, 46, 0.18);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.84);
+  font: inherit;
+  color: #2f2218;
   line-height: 1.5;
 }
 
-.question-input:focus {
-  border-color: #7d4f2b;
-  box-shadow: 0 0 0 3px rgba(125, 79, 43, 0.1);
-  background: #fff;
+.qa-question-input:focus {
+  outline: none;
+  border-color: rgba(125, 79, 43, 0.42);
+  box-shadow: 0 0 0 3px rgba(125, 79, 43, 0.14);
 }
 
-.question-input::placeholder {
-  color: #aaa;
+.qa-submit-button {
+  white-space: nowrap;
 }
 
-.question-input:disabled {
-  background: #f5f5f5;
-  cursor: not-allowed;
+.qa-suggest-group {
+  justify-content: flex-start;
 }
 
-.ask-button {
-  padding: 12px 24px;
-  background: #7d4f2b;
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  font-size: 1rem;
-  cursor: pointer;
-  font-weight: 600;
-  transition: all 0.25s ease;
-  box-shadow: 0 4px 12px rgba(125, 79, 43, 0.2);
-  align-self: flex-start;
-}
-
-.ask-button:hover:not(:disabled) {
-  background: #8c5e34;
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(125, 79, 43, 0.3);
-}
-
-.ask-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.suggestions {
+.qa-loading-panel {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-}
-
-.suggest-label {
-  font-size: 0.875rem;
-  color: #666;
-  font-weight: 500;
-}
-
-.suggestion-tag {
-  padding: 8px 14px;
-  background: #f5f2e9;
-  border: 1px solid rgba(125, 79, 43, 0.15);
-  border-radius: 999px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  color: #2a2318;
-  transition: all 0.2s ease;
-}
-
-.suggestion-tag:hover {
-  background: #ede8dc;
-  border-color: rgba(125, 79, 43, 0.3);
-  transform: translateY(-1px);
-}
-
-.error-message {
-  padding: 12px 16px;
-  background: #ffebee;
-  border: 1px solid #ffcdd2;
-  border-radius: 8px;
-  color: #c62828;
-  margin-bottom: 16px;
-  font-size: 0.9rem;
-}
-
-.loading-state {
-  text-align: center;
-  padding: 3rem 2rem;
-  color: #666;
-  background: #fff;
-  border-radius: 12px;
-  border: 1px solid #e5e5e5;
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  margin: 0 auto 1rem;
-  border: 3px solid #f3f3f3;
-  border-top: 3px solid #7d4f2b;
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
-}
-
-.answer-section {
-  animation: fadeIn 0.3s ease-in;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.answer-card {
-  background: #fff;
-  border: 1px solid #e5e5e5;
-  border-radius: 12px;
-  padding: 24px;
-  box-shadow: 0 2px 8px rgba(125, 79, 43, 0.06);
-}
-
-.answer-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid #eee;
-}
-
-.answer-header h3 {
-  margin: 0;
-  font-size: 1.25rem;
-  color: #2a2318;
-  font-weight: 700;
-}
-
-.confidence-badge {
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.confidence-badge.high {
-  background: #e8f5e9;
-  color: #2e7d32;
-  border: 1px solid #c8e6c9;
-}
-
-.confidence-badge.medium {
-  background: #fff3e0;
-  color: #ef6c00;
-  border: 1px solid #ffe0b2;
-}
-
-.confidence-badge.low {
-  background: #ffebee;
-  color: #c62828;
-  border: 1px solid #ffcdd2;
-}
-
-.answer-content {
-  margin-bottom: 20px;
-}
-
-.answer-text {
-  font-size: 1.05rem;
-  line-height: 1.8;
-  color: #333;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.entities-section,
-.related-section {
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #eee;
-}
-
-.entities-section h4,
-.related-section h4 {
-  margin: 0 0 12px 0;
-  font-size: 1rem;
-  color: #666;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-}
-
-.entity-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.entity-tag {
-  padding: 6px 12px;
-  background: #e8eaf6;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  color: #3949ab;
-  font-weight: 500;
-  border: 1px solid #c5cae9;
-}
-
-.entity-tag small {
-  color: #888;
-  margin-left: 6px;
-  font-size: 0.8rem;
-}
-
-.related-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-wrap: wrap;
   gap: 10px;
 }
 
-.related-list li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: #f5f2e9;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  border: 1px solid rgba(125, 79, 43, 0.1);
+.qa-loading-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #7d4f2b;
+  box-shadow: 0 0 0 0 rgba(125, 79, 43, 0.55);
+  animation: pulse 1.2s infinite;
 }
 
-.entity-type-tag {
-  padding: 2px 8px;
-  background: rgba(125, 79, 43, 0.1);
-  color: #7d4f2b;
-  border-radius: 4px;
-  font-size: 0.75rem;
-  font-weight: 500;
+.qa-result-layout {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.9fr);
+  align-items: start;
 }
 
-.mention-count {
-  color: #999;
-  font-size: 0.8rem;
+.qa-answer-main {
+  line-height: 1.75;
+  color: #2f2218;
+  font-size: 1.02rem;
 }
 
-.cypher-details {
-  margin-top: 20px;
-  padding: 16px;
-  background: #f8f8f8;
-  border-radius: 8px;
-  font-size: 0.85rem;
-  border: 1px solid #e0e0e0;
-}
-
-.cypher-code {
-  margin: 8px 0 0 0;
-  padding: 12px;
-  background: #2d2d2d;
-  color: #f8f8f2;
-  border-radius: 6px;
-  overflow-x: auto;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8rem;
-  line-height: 1.5;
-}
-
-.cypher-hint {
+.qa-details {
   margin-top: 12px;
-  padding: 10px;
-  background: #fff8e1;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  color: #856404;
 }
 
-.help-section {
-  text-align: center;
-  padding: 3rem 2rem;
+.qa-details pre {
+  margin: 8px 0 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(248, 242, 233, 0.8);
+  border: 1px solid rgba(111, 74, 46, 0.16);
+  overflow-x: auto;
 }
 
-.help-card {
-  background: #fff;
-  border: 1px solid #e5e5e5;
+.qa-confidence-card {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 12px;
   border-radius: 12px;
-  padding: 2rem;
-  box-shadow: 0 2px 8px rgba(125, 79, 43, 0.06);
-  text-align: left;
-  max-width: 600px;
-  margin: 0 auto;
+  background: rgba(250, 245, 236, 0.82);
+  border: 1px solid rgba(111, 74, 46, 0.16);
 }
 
-.help-card h3 {
-  margin: 0 0 1rem 0;
-  color: #2a2318;
-  font-size: 1.25rem;
-  font-weight: 700;
+.qa-confidence-card strong {
+  font-size: 1.3rem;
 }
 
-.help-card ul {
+.qa-side-block {
+  margin-top: 12px;
+}
+
+.qa-side-block h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.qa-related-list {
+  display: grid;
+  gap: 8px;
+}
+
+.qa-related-item {
+  border: 1px solid rgba(111, 74, 46, 0.14);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.qa-related-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qa-related-item p {
+  margin: 6px 0 0;
+  color: #5d4a38;
+  font-size: 0.92rem;
+}
+
+.qa-empty-panel h2 {
+  margin: 0 0 10px;
+}
+
+.qa-empty-panel p {
   margin: 0;
-  padding-left: 1.5rem;
-  color: #555;
-  line-height: 1.8;
+  color: #5d4a38;
+  line-height: 1.7;
 }
 
-.help-card li {
-  margin-bottom: 0.5rem;
+.qa-empty-panel p + p {
+  margin-top: 8px;
 }
 
-@media (max-width: 768px) {
-  .qa-page {
-    padding: 16px 12px;
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(125, 79, 43, 0.45);
   }
-
-  .page-header {
-    padding: 16px;
+  70% {
+    box-shadow: 0 0 0 10px rgba(125, 79, 43, 0);
   }
-
-  .page-header h1 {
-    font-size: 1.5rem;
-    padding-left: 60px;
+  100% {
+    box-shadow: 0 0 0 0 rgba(125, 79, 43, 0);
   }
+}
 
-  .back-button {
-    left: 16px;
-    top: 16px;
-    padding: 6px 12px;
-    font-size: 0.85rem;
+@media (max-width: 980px) {
+  .qa-result-layout {
+    grid-template-columns: 1fr;
   }
+}
 
-  .input-wrapper {
-    flex-direction: column;
-  }
-
-  .ask-button {
-    width: 100%;
-    padding: 12px;
-  }
-
-  .answer-card {
-    padding: 16px;
-  }
-
-  .answer-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-
-  .confidence-badge {
-    align-self: flex-start;
+@media (max-width: 720px) {
+  .qa-input-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

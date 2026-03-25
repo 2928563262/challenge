@@ -3,6 +3,7 @@ import axios from "axios";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import HoverHint from "../components/common/HoverHint.vue";
 import {
   fetchGraphEntityDetail,
   fetchGraphShowcase,
@@ -77,6 +78,11 @@ const nerInputText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主
 const relationInputText = ref("太阳病，头痛发热，汗出恶风，桂枝汤主之。");
 const relationHeadKey = ref("");
 const relationTailKey = ref("");
+const manualEntityText = ref("");
+const manualEntityType = ref("SYNDROME");
+const manualEntityStart = ref("");
+const manualEntityError = ref("");
+const manualEntityMessage = ref("");
 const searchResults = ref<GraphEntity[]>([]);
 const searchTotal = ref(0);
 const corpusResults = ref<CorpusEntry[]>([]);
@@ -591,6 +597,151 @@ function graphCandidateSummary(candidate: GraphEntity) {
   return `提及 ${candidate.mention_count} 次 · 覆盖 ${candidate.record_count} 条`;
 }
 
+function resetManualEntityFeedback() {
+  manualEntityError.value = "";
+  manualEntityMessage.value = "";
+}
+
+function ensureNerContainer() {
+  if (nerPrediction.value) {
+    return;
+  }
+  const seedText = nerInputText.value.trim();
+  if (!seedText) {
+    throw new Error("请先输入条文文本，再手动新增实体。");
+  }
+  nerPrediction.value = {
+    text: seedText,
+    tokens: [],
+    labels: [],
+    entities: [],
+  };
+  relationInputText.value = seedText;
+}
+
+function parseManualEntitySpan(sourceText: string, entityText: string) {
+  const startText = manualEntityStart.value.trim();
+  if (!startText) {
+    const start = sourceText.indexOf(entityText);
+    if (start < 0) {
+      throw new Error("原文中未找到该实体，请填写起始位置。");
+    }
+    if (sourceText.indexOf(entityText, start + 1) >= 0) {
+      throw new Error("原文存在同名实体，请填写起始位置以避免歧义。");
+    }
+    return { start, end: start + entityText.length };
+  }
+
+  const start = Number.parseInt(startText, 10);
+  if (!Number.isInteger(start)) {
+    throw new Error("起始位置必须是整数。");
+  }
+  const end = start + entityText.length;
+  if (start < 0 || end <= start || end > sourceText.length) {
+    throw new Error("起始位置越界或区间无效。");
+  }
+  const spanText = sourceText.slice(start, end);
+  if (spanText !== entityText) {
+    throw new Error(`位置与文本不一致，当前片段为“${spanText}”。`);
+  }
+  return { start, end };
+}
+
+async function resolveSinglePredictedEntityToGraph(entity: NerPredictionEntity) {
+  const key = predictedEntityKey(entity);
+  try {
+    const payload = await searchGraphEntities({ keyword: entity.text, entityType: entity.type, limit: 3 });
+    predictedGraphMatches.value = {
+      ...predictedGraphMatches.value,
+      [key]: payload.results,
+    };
+  } catch {
+    predictedGraphMatches.value = {
+      ...predictedGraphMatches.value,
+      [key]: [],
+    };
+  }
+}
+
+async function addManualEntity() {
+  resetManualEntityFeedback();
+  try {
+    ensureNerContainer();
+    if (!nerPrediction.value) {
+      return;
+    }
+
+    const entityText = manualEntityText.value.trim();
+    if (!entityText) {
+      throw new Error("请先填写实体文本。");
+    }
+    if (!(manualEntityType.value in entityTypeLabels)) {
+      throw new Error("请选择有效的实体类型。");
+    }
+
+    const span = parseManualEntitySpan(nerPrediction.value.text, entityText);
+    const newEntity: NerPredictionEntity = {
+      text: entityText,
+      type: manualEntityType.value,
+      start: span.start,
+      end: span.end,
+    };
+
+    const entityKey = predictedEntityKey(newEntity);
+    const exists = nerPrediction.value.entities.some((item) => predictedEntityKey(item) === entityKey);
+    if (exists) {
+      throw new Error("该实体已存在，无需重复新增。");
+    }
+
+    nerPrediction.value = {
+      ...nerPrediction.value,
+      entities: [...nerPrediction.value.entities, newEntity].sort((left, right) => left.start - right.start || left.end - right.end),
+    };
+    await resolveSinglePredictedEntityToGraph(newEntity);
+
+    if (!relationHeadKey.value) {
+      relationHeadKey.value = entityKey;
+    } else if (!relationTailKey.value && relationHeadKey.value !== entityKey) {
+      relationTailKey.value = entityKey;
+    }
+
+    manualEntityText.value = "";
+    manualEntityStart.value = "";
+    manualEntityMessage.value = "已新增实体。";
+  } catch (error: unknown) {
+    manualEntityError.value = error instanceof Error ? error.message : "新增实体失败，请稍后重试。";
+  }
+}
+
+function removePredictedEntity(entity: NerPredictionEntity) {
+  if (!nerPrediction.value) {
+    return;
+  }
+  resetManualEntityFeedback();
+  const key = predictedEntityKey(entity);
+  nerPrediction.value = {
+    ...nerPrediction.value,
+    entities: nerPrediction.value.entities.filter((item) => predictedEntityKey(item) !== key),
+  };
+
+  const { [key]: _, ...rest } = predictedGraphMatches.value;
+  predictedGraphMatches.value = rest;
+
+  if (relationHeadKey.value === key) {
+    relationHeadKey.value = "";
+  }
+  if (relationTailKey.value === key) {
+    relationTailKey.value = "";
+  }
+
+  relationHistory.value = relationHistory.value.filter((item) => predictedEntityKey(item.head) !== key && predictedEntityKey(item.tail) !== key);
+  if (relationPrediction.value && (predictedEntityKey(relationPrediction.value.head) === key || predictedEntityKey(relationPrediction.value.tail) === key)) {
+    relationPrediction.value = null;
+  }
+  selectedBatchPairs.value = new Set();
+  manualEntityMessage.value = "已删除实体。";
+}
+
 function assignRelationEntity(role: "head" | "tail", entity: NerPredictionEntity) {
   relationPrediction.value = null;
   relationPredictError.value = "";
@@ -760,6 +911,7 @@ async function runNerPrediction() {
   nerError.value = "";
   relationPredictError.value = "";
   relationBatchMessage.value = "";
+  resetManualEntityFeedback();
   relationPrediction.value = null;
   relationHistory.value = [];
   exportMessage.value = "";
@@ -1067,7 +1219,9 @@ watch(
         </form>
 
         <p v-if="nerError" class="status-text error">{{ nerError }}</p>
-        <p v-else class="status-text">当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。</p>
+        <div v-else class="inline-hint-row">
+          <HoverHint text="当前这一步使用已经训练好的 NER 基线，把条文中的证候、症状、方剂等实体先找出来，再自动尝试映射到已有图谱节点。" aria-label="条文智能抽取说明" />
+        </div>
       </article>
 
       <article class="panel">
@@ -1078,7 +1232,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!nerPrediction" class="status-text">先运行一次抽取，这里会显示实体结果和类型分布。</p>
+        <div v-if="!nerPrediction" class="inline-hint-row">
+          <HoverHint text="先运行一次抽取，这里会显示实体结果和类型分布。" aria-label="模型抽取结果说明" />
+        </div>
         <template v-else>
           <div class="prediction-summary-strip">
             <div class="breakdown-item"><span>抽取实体</span><strong>{{ predictionMatchSummary.total }}</strong></div>
@@ -1091,6 +1247,27 @@ watch(
               <span>{{ formatEntityType(type) }}</span>
               <strong>{{ count }}</strong>
             </div>
+          </div>
+
+          <div class="manual-entity-panel">
+            <div class="manual-entity-header">
+              <strong>人工补充实体</strong>
+              <span>模型漏抽可新增，错误或重复可删除。</span>
+            </div>
+            <div class="manual-entity-grid">
+              <input v-model="manualEntityText" type="text" placeholder="实体文本（例如：桂枝汤）" />
+              <select v-model="manualEntityType">
+                <option v-for="opt in entityTypeOptions" :key="`manual-${opt.value}`" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+              <input v-model="manualEntityStart" type="number" min="0" placeholder="起始位（可选）" />
+            </div>
+            <div class="cta-row compact-cta-row">
+              <button class="ghost-button mini-button" type="button" @click="addManualEntity">新增实体</button>
+            </div>
+            <p v-if="manualEntityError" class="status-text error">{{ manualEntityError }}</p>
+            <p v-else-if="manualEntityMessage" class="status-text">{{ manualEntityMessage }}</p>
           </div>
 
           <p v-if="resolvingPredictedEntities" class="status-text">正在把抽取结果映射到图谱节点...</p>
@@ -1123,6 +1300,7 @@ watch(
                 <button class="ghost-button mini-button" type="button" @click="assignRelationEntity('tail', entity)">设为尾实体</button>
                 <button class="ghost-button mini-button" type="button" @click="usePredictionAsSearchSeed(entity)">设为检索词</button>
                 <button class="primary-button mini-button" type="button" @click="jumpToPredictedEntity(entity)">打开最佳映射</button>
+                <button class="ghost-button mini-button danger-button" type="button" @click="removePredictedEntity(entity)">删除实体</button>
               </div>
             </div>
           </div>
@@ -1184,7 +1362,9 @@ watch(
 
         <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
         <p v-else-if="relationBatchMessage" class="status-text">{{ relationBatchMessage }}</p>
-        <p v-else class="status-text">当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断"证候-方剂"或"证候-症状"是否成立。</p>
+        <div v-else class="inline-hint-row">
+          <HoverHint text='当前关系模型只作为辅助判断，不直接覆盖规则结果。更适合帮助你快速判断“证候-方剂”或“证候-症状”是否成立。' aria-label="关系辅助判断说明" />
+        </div>
       </article>
 
       <article class="panel">
@@ -1195,7 +1375,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!relationPrediction" class="status-text">选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。</p>
+        <div v-if="!relationPrediction" class="inline-hint-row">
+          <HoverHint text="选择头尾实体后运行一次关系判断，这里会显示预测标签和候选分数。" aria-label="关系预测结果说明" />
+        </div>
         <template v-else>
           <div class="relation-result-card">
             <div class="breakdown-item"><span>预测关系</span><strong>{{ formatRelationType(relationPrediction.label) }}</strong></div>
@@ -1227,9 +1409,14 @@ watch(
         </div>
       </div>
 
-      <p v-if="!predictedEntities.length" class="status-text">先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。</p>
+      <div v-if="!predictedEntities.length" class="inline-hint-row">
+        <HoverHint text="先运行一次 NER 抽取，这里会根据本次条文临时组织实体与关系。" aria-label="会话图说明" />
+      </div>
       <template v-else>
-        <p class="status-text">{{ exportMessage || '可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。' }}</p>
+        <p v-if="exportMessage" class="status-text">{{ exportMessage }}</p>
+        <div v-else class="inline-hint-row">
+          <HoverHint text="可将当前条文的临时节点、映射候选和关系判断导出为 JSON，方便后续复核或入库。" aria-label="会话图导出说明" />
+        </div>
         <div class="session-graph-layout">
           <div class="session-graph-canvas">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" class="network-lines">
@@ -1321,7 +1508,8 @@ watch(
               <strong>{{ entity.name }}</strong>
               <span>{{ formatEntityType(entity.entity_type) }}</span>
             </div>
-            <p>提及 {{ entity.mention_count }} 次 · 覆盖 {{ entity.record_count }} 条 · 首次出现 {{ entity.first_record_id }}</p>
+            <p>提及 {{ entity.mention_count }} 次 · 覆盖 {{ entity.record_count }} 条</p>
+            <p>原条文：{{ entity.first_clause_text || "暂无原文片段" }}</p>
           </button>
         </div>
       </article>
@@ -1334,7 +1522,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="searchResults.length === 0" class="status-text">执行搜索后，这里会显示实体类型分布和高频实体 TOP5 图表。</p>
+        <div v-if="searchResults.length === 0" class="inline-hint-row">
+          <HoverHint text="执行搜索后，这里会显示实体类型分布和高频实体 TOP5 图表。" aria-label="搜索动态统计说明" />
+        </div>
         <template v-else>
           <div class="stats-summary-row">
             <div class="mini-stat-item">
@@ -1368,7 +1558,9 @@ watch(
           </div>
         </div>
 
-        <p v-if="!selectedEntityDetail" class="status-text">选择一个实体后，这里会显示它在条文中的出现位置与证据片段。</p>
+        <div v-if="!selectedEntityDetail" class="inline-hint-row">
+          <HoverHint text="选择一个实体后，这里会显示它在条文中的出现位置与证据片段。" aria-label="原文证据回溯说明" />
+        </div>
         <div v-else class="evidence-list">
           <article v-for="mention in selectedEntityDetail.mentions" :key="`${mention.clause_id}-${mention.start}-${mention.end}`" class="evidence-card">
             <div class="evidence-meta">

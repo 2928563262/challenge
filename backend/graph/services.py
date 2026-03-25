@@ -1020,13 +1020,56 @@ def search_entities(keyword: str = "", entity_type: str | None = None, limit: in
     normalized_type = entity_type.strip().upper() if entity_type else ""
     safe_limit = max(1, min(limit, 100))
 
+    def resolve_first_clause_text(entity_id: str, first_record_id: str) -> str:
+        mentions = data["mentions_by_entity"].get(entity_id, [])
+        if mentions:
+            first_mention = min(
+                mentions,
+                key=lambda item: (
+                    str(item.get("record_id") or ""),
+                    int(item.get("start") or 0),
+                    int(item.get("end") or 0),
+                    str(item.get("clause_id") or ""),
+                ),
+            )
+            clause_text = str(first_mention.get("clause_text") or "").strip()
+            if clause_text:
+                return clause_text
+            clause_id = str(first_mention.get("clause_id") or "").strip()
+            if clause_id:
+                clause = data["clauses"].get(clause_id)
+                if clause:
+                    return str(clause.get("text") or "").strip()
+
+        normalized_record_id = str(first_record_id or "").strip()
+        if normalized_record_id:
+            candidates = [item for item in data["clauses"].values() if str(item.get("record_id") or "") == normalized_record_id]
+            if candidates:
+                first_clause = min(
+                    candidates,
+                    key=lambda item: (
+                        int(item.get("line_number") or 0),
+                        str(item.get("clause_id") or ""),
+                    ),
+                )
+                return str(first_clause.get("text") or "").strip()
+        return ""
+
     results = []
     for entity in data["entities"].values():
         if normalized_type and entity["entity_type"] != normalized_type:
             continue
         if normalized_keyword and normalized_keyword not in entity["name"] and normalized_keyword not in entity["entity_id"]:
             continue
-        results.append(entity)
+        results.append(
+            {
+                **entity,
+                "first_clause_text": resolve_first_clause_text(
+                    entity_id=str(entity.get("entity_id") or ""),
+                    first_record_id=str(entity.get("first_record_id") or ""),
+                ),
+            }
+        )
 
     results.sort(key=lambda item: (-item["mention_count"], item["entity_type"], item["name"]))
     return {

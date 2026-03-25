@@ -2,6 +2,7 @@
 import axios from "axios";
 import { computed, onMounted, ref } from "vue";
 
+import HoverHint from "../components/common/HoverHint.vue";
 import { fetchModelSummary, predictNer, predictRelation } from "../services/api";
 import type { DatasetSplitSummary, ModelSummary, NerPrediction, NerPredictionEntity, RelationPrediction } from "../types/api";
 
@@ -35,6 +36,14 @@ const entityTypeLabels: Record<string, string> = {
   ADMINISTRATION: "服法",
 };
 
+const relationTypeLabels: Record<string, string> = {
+  SYNDROME_HAS_SYMPTOM: "证候具有症状",
+  SYNDROME_TO_FORMULA: "证候对应方剂",
+  FORMULA_CONTAINS_HERB: "方剂包含中药",
+  FORMULA_HAS_ADMINISTRATION: "方剂对应服法",
+  NO_RELATION: "无稳定关系",
+};
+
 const entityTypeOptions = [
   { label: "证候", value: "SYNDROME" },
   { label: "症状", value: "SYMPTOM" },
@@ -50,6 +59,22 @@ function formatBoolean(value: boolean) {
 
 function formatEntityType(entityTypeName: string) {
   return entityTypeLabels[entityTypeName] || entityTypeName;
+}
+
+function formatRelationLabel(relationLabel: string) {
+  return relationTypeLabels[relationLabel] || relationLabel;
+}
+
+function formatNerLabel(label: string) {
+  if (label === "O") {
+    return "非实体";
+  }
+  if (label.startsWith("B-") || label.startsWith("I-")) {
+    const prefix = label.slice(0, 2);
+    const type = label.slice(2);
+    return `${prefix}${formatEntityType(type)}`;
+  }
+  return label;
 }
 
 function summarizeSplit(split: DatasetSplitSummary) {
@@ -212,7 +237,7 @@ onMounted(async () => {
 
         <div v-if="modelSummary?.ner.label_list.length" class="muted-list">
           <strong>标签空间</strong>
-          <p>{{ modelSummary.ner.label_list.join(" / ") }}</p>
+          <p>{{ modelSummary.ner.label_list.map((item) => formatNerLabel(item)).join(" / ") }}</p>
         </div>
 
         <div class="dataset-split-grid">
@@ -248,7 +273,7 @@ onMounted(async () => {
 
         <div v-if="modelSummary?.relation.label_list.length" class="muted-list">
           <strong>关系标签</strong>
-          <p>{{ modelSummary.relation.label_list.join(" / ") }}</p>
+          <p>{{ modelSummary.relation.label_list.map((item) => formatRelationLabel(item)).join(" / ") }}</p>
         </div>
 
         <div class="dataset-split-grid">
@@ -256,7 +281,7 @@ onMounted(async () => {
             <span>{{ name }}</span>
             <strong>{{ summarizeSplit(split) }}</strong>
             <p v-if="labelEntries(split.label_count_by_type).length">
-              {{ labelEntries(split.label_count_by_type).map(([key, value]) => `${key} ${value}`).join(" · ") }}
+              {{ labelEntries(split.label_count_by_type).map(([key, value]) => `${formatRelationLabel(key)} ${value}`).join(" · ") }}
             </p>
           </article>
         </div>
@@ -286,9 +311,9 @@ onMounted(async () => {
         </form>
 
         <p v-if="predictError" class="status-text error">{{ predictError }}</p>
-        <p v-else-if="!prediction" class="status-text">
-          如果这里返回 “checkpoint not found”，说明模型数据链路已经通了，但还需要按工作台里的命令训练并导出检查点。
-        </p>
+        <div v-else-if="!prediction" class="inline-hint-row">
+          <HoverHint text='如果这里返回“checkpoint not found”，说明模型数据链路已通，但仍需按工作台命令训练并导出检查点。' aria-label="NER 在线预测提示" />
+        </div>
 
         <template v-else>
           <div class="entity-chip-list">
@@ -355,13 +380,13 @@ onMounted(async () => {
         </form>
 
         <p v-if="relationPredictError" class="status-text error">{{ relationPredictError }}</p>
-        <p v-else-if="!relationPrediction" class="status-text">
-          先从上面的 NER 结果中快速填充实体，或者手动输入头尾实体。当前接口会优先使用关系基线检查点。
-        </p>
+        <div v-else-if="!relationPrediction" class="inline-hint-row">
+          <HoverHint text="先从上面的 NER 结果快速填充实体，或手动输入头尾实体。当前接口会优先使用关系基线检查点。" aria-label="关系预测提示" />
+        </div>
 
         <template v-else>
           <div class="relation-result-card">
-            <div class="breakdown-item"><span>预测标签</span><strong>{{ relationPrediction.label }}</strong></div>
+            <div class="breakdown-item"><span>预测标签</span><strong>{{ formatRelationLabel(relationPrediction.label) }}</strong></div>
             <div class="breakdown-item"><span>置信度</span><strong>{{ relationPrediction.confidence.toFixed(4) }}</strong></div>
             <div class="breakdown-item"><span>头实体</span><strong>{{ relationPrediction.head.text }} / {{ formatEntityType(relationPrediction.head.type) }}</strong></div>
             <div class="breakdown-item"><span>尾实体</span><strong>{{ relationPrediction.tail.text }} / {{ formatEntityType(relationPrediction.tail.type) }}</strong></div>
@@ -369,7 +394,7 @@ onMounted(async () => {
 
           <div class="dataset-split-grid relation-score-grid">
             <article v-for="item in relationPrediction.top_predictions" :key="item.label" class="dataset-split-card">
-              <span>{{ item.label }}</span>
+              <span>{{ formatRelationLabel(item.label) }}</span>
               <strong>{{ item.score.toFixed(4) }}</strong>
             </article>
           </div>
