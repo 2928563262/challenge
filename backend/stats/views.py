@@ -1,323 +1,339 @@
 from __future__ import annotations
 
-from django.http import JsonResponse
-from django.views import View
+from collections import Counter, defaultdict
+from itertools import combinations
 from typing import Any
 
-from graph.services import build_graph_summary, load_graph_data
+from django.http import JsonResponse
+from django.views import View
+
 from corpus.services import build_overview_payload
+from graph.services import build_graph_summary, load_graph_data
+
+
+ENTITY_TYPES = [
+    "SYNDROME",
+    "SYMPTOM",
+    "FORMULA",
+    "HERB",
+    "THERAPY",
+    "ADMINISTRATION",
+]
+
+
+def _safe_limit(raw: str | None, *, default: int = 20, max_value: int = 80) -> int:
+    try:
+        value = int(raw or default)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(value, max_value))
+
+
+def _entity_name(entity: dict[str, Any]) -> str:
+    return str(entity.get("name") or "")
+
+
+def _entity_type(entity: dict[str, Any]) -> str:
+    return str(entity.get("entity_type") or "")
+
+
+def _entity_mention(entity: dict[str, Any]) -> int:
+    return int(entity.get("mention_count") or 0)
 
 
 class OverviewStatsView(View):
-    """全局概览统计"""
+    """统计总览接口。"""
 
     def get(self, request) -> JsonResponse:
-        # 获取图谱摘要
-        summary = build_graph_summary()
-        
-        # 获取语料概览
+        data = load_graph_data()
+        graph_summary = build_graph_summary()
+
         try:
-            overview = build_overview_payload()
-            article_count = overview.get('stats', {}).get('entry_count', 0)
+            corpus_overview = build_overview_payload()
+            article_count = int(corpus_overview.get("stats", {}).get("entry_count", 0))
         except Exception:
             article_count = 0
 
-        # 提取实体类型分布
-        entity_type_breakdown = summary.get('entity_type_breakdown', {})
-        
-        # 提取关系统计
-        relation_type_breakdown = summary.get('relation_type_breakdown', {})
+        entities = list(data["entities"].values())
+        top_entities_by_type: dict[str, list[dict[str, Any]]] = {entity_type: [] for entity_type in ENTITY_TYPES}
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for entity in entities:
+            grouped[_entity_type(entity)].append(entity)
 
-        # 按类型分组 top_entities
-        top_entities_by_type = {
-            'FORMULA': [],
-            'HERB': [],
-            'SYNDROME': [],
-            'SYMPTOM': [],
-            'THERAPY': [],
-            'ADMINISTRATION': []
-        }
-        for entity in summary.get('top_entities', []):
-            entity_type = entity.get('entity_type')
-            if entity_type in top_entities_by_type:
-                top_entities_by_type[entity_type].append({
-                    'name': entity.get('name'),
-                    'mention_count': entity.get('mention_count', 0)
-                })
+        for entity_type in ENTITY_TYPES:
+            ranked = sorted(grouped.get(entity_type, []), key=lambda item: (-_entity_mention(item), _entity_name(item)))
+            top_entities_by_type[entity_type] = [
+                {"name": _entity_name(item), "mention_count": _entity_mention(item)}
+                for item in ranked[:20]
+            ]
 
-        return JsonResponse({
-            'kpi': {
-                'article_count': article_count,
-                'entity_count': summary.get('entity_node_count', 0),
-                'relation_count': summary.get('entity_relation_count', 0),
-                'clause_mention_count': summary.get('clause_mention_count', 0),
-            },
-            'entity_type_breakdown': entity_type_breakdown,
-            'relation_type_breakdown': relation_type_breakdown,
-            'top_entities_by_type': top_entities_by_type
-        })
+        return JsonResponse(
+            {
+                "kpi": {
+                    "article_count": article_count,
+                    "entity_count": int(graph_summary.get("entity_node_count", 0)),
+                    "relation_count": int(graph_summary.get("entity_relation_count", 0)),
+                    "clause_mention_count": int(graph_summary.get("clause_mention_count", 0)),
+                },
+                "entity_type_breakdown": graph_summary.get("entity_type_breakdown", {}),
+                "relation_type_breakdown": graph_summary.get("relation_type_breakdown", {}),
+                "top_entities_by_type": top_entities_by_type,
+            }
+        )
 
 
 class HerbAnalysisView(View):
-    """中药分析"""
+    """中药频次与共现分析。"""
 
     def get(self, request) -> JsonResponse:
-        limit = int(request.GET.get('limit', 20))
-        
-        # 从 graph service 获取数据
+        limit = _safe_limit(request.GET.get("limit"), default=20, max_value=60)
         data = load_graph_data()
-        
-        # 筛选所有中药实体
-        all_herbs = [
-            e for e in data['entities'].values() 
-            if e['entity_type'] == 'HERB'
-        ]
-        # 按提及次数排序
-        all_herbs.sort(key=lambda x: (-x['mention_count'], x['name']))
-        
-        # 取前 limit 个
-        top_herbs = all_herbs[:limit]
-        
-        result_herbs = [
-            {'name': h['name'], 'count': h['mention_count']}
-            for h in top_herbs
-        ]
-        
-        # 构建共现矩阵（基于共享的方剂）
-        herb_names_list = [h['name'] for h in top_herbs]
-        cooccurrence_matrix = {}
-        
-        # 找出所有包含 HERB 的 FORMULA
-        formulas_with_herbs = []
-        for entity in data['entities'].values():
-            if entity['entity_type'] == 'FORMULA':
-                outgoing = data['outgoing_relations'].get(entity['entity_id'], [])
-                herb_ids = [rel['end_id'] for rel in outgoing if rel['relation_type'] == 'FORMULA_CONTAINS_HERB']
-                herb_names = [data['entities'][hid]['name'] for hid in herb_ids if hid in data['entities']]
-                formulas_with_herbs.append({
-                    'name': entity['name'],
-                    'herbs': herb_names
-                })
-        
-        # 计算共现
-        for i, herb1 in enumerate(herb_names_list):
-            cooccurrence_matrix[herb1] = {}
-            for herb2 in herb_names_list:
-                if herb1 == herb2:
-                    continue
-                count = sum(1 for f in formulas_with_herbs if herb1 in f['herbs'] and herb2 in f['herbs'])
-                if count > 0:
-                    cooccurrence_matrix[herb1][herb2] = count
 
-        return JsonResponse({
-            'top_herbs': result_herbs,
-            'cooccurrence_matrix': cooccurrence_matrix
-        })
+        herbs = [entity for entity in data["entities"].values() if _entity_type(entity) == "HERB"]
+        herbs.sort(key=lambda item: (-_entity_mention(item), _entity_name(item)))
+        top_herbs = herbs[:limit]
+        top_herb_ids = {str(item.get("entity_id") or "") for item in top_herbs}
+
+        # 每味中药关联到的高频方剂（用于前端提示）
+        top_herb_rows: list[dict[str, Any]] = []
+        for herb in top_herbs:
+            herb_id = str(herb.get("entity_id") or "")
+            incoming = data["incoming_relations"].get(herb_id, [])
+            formula_hits: list[tuple[str, int]] = []
+            for relation in incoming:
+                if str(relation.get("relation_type") or "") != "FORMULA_CONTAINS_HERB":
+                    continue
+                start_id = str(relation.get("start_id") or "")
+                formula = data["entities"].get(start_id)
+                if not formula or _entity_type(formula) != "FORMULA":
+                    continue
+                formula_hits.append((_entity_name(formula), int(relation.get("evidence_count") or 0)))
+            formula_hits.sort(key=lambda item: (-item[1], item[0]))
+            top_herb_rows.append(
+                {
+                    "name": _entity_name(herb),
+                    "count": _entity_mention(herb),
+                    "formulas": [name for name, _ in formula_hits[:8]],
+                }
+            )
+
+        # 共现矩阵：同一方剂内共同出现即记一次
+        pair_counter: Counter[tuple[str, str]] = Counter()
+        for formula in data["entities"].values():
+            if _entity_type(formula) != "FORMULA":
+                continue
+            formula_id = str(formula.get("entity_id") or "")
+            outgoing = data["outgoing_relations"].get(formula_id, [])
+            herb_names: list[str] = []
+            for relation in outgoing:
+                if str(relation.get("relation_type") or "") != "FORMULA_CONTAINS_HERB":
+                    continue
+                herb_id = str(relation.get("end_id") or "")
+                if herb_id not in top_herb_ids:
+                    continue
+                herb_entity = data["entities"].get(herb_id)
+                if herb_entity and _entity_type(herb_entity) == "HERB":
+                    herb_names.append(_entity_name(herb_entity))
+
+            unique_names = sorted(set(herb_names))
+            for left, right in combinations(unique_names, 2):
+                pair_counter[(left, right)] += 1
+                pair_counter[(right, left)] += 1
+
+        cooccurrence_matrix: dict[str, dict[str, int]] = {}
+        top_names = [row["name"] for row in top_herb_rows]
+        for herb_name in top_names:
+            cooccurrence_matrix[herb_name] = {}
+            for other_name in top_names:
+                if herb_name == other_name:
+                    continue
+                count = int(pair_counter.get((herb_name, other_name), 0))
+                if count > 0:
+                    cooccurrence_matrix[herb_name][other_name] = count
+
+        return JsonResponse({"top_herbs": top_herb_rows, "cooccurrence_matrix": cooccurrence_matrix})
 
 
 class FormulaAnalysisView(View):
-    """方剂分析"""
+    """方剂频次与方剂-药味网络。"""
 
     def get(self, request) -> JsonResponse:
-        limit = int(request.GET.get('limit', 20))
-        
+        limit = _safe_limit(request.GET.get("limit"), default=20, max_value=60)
         data = load_graph_data()
-        
-        # 筛选所有方剂
-        all_formulas = [
-            e for e in data['entities'].values() 
-            if e['entity_type'] == 'FORMULA'
-        ]
-        all_formulas.sort(key=lambda x: (-x['mention_count'], x['name']))
-        
-        top_formulas = all_formulas[:limit]
-        
-        result_formulas = []
-        formula_herb_network = {'nodes': [], 'edges': []}
-        
-        for f in top_formulas:
-            # 统计方剂包含的中药数量
-            outgoing = data['outgoing_relations'].get(f['entity_id'], [])
-            herb_relations = [rel for rel in outgoing if rel['relation_type'] == 'FORMULA_CONTAINS_HERB']
-            herb_count = len(herb_relations)
-            
-            result_formulas.append({
-                'name': f['name'],
-                'mention_count': f['mention_count'],
-                'herb_count': herb_count
-            })
-            
-            # 添加到网络图节点（方剂）
-            formula_node_id = f['name']
-            formula_herb_network['nodes'].append({
-                'id': formula_node_id,
-                'name': formula_node_id,
-                'type': 'formula',
-                'symbolSize': 20 + herb_count * 5
-            })
-            
-            # 添加中药节点和边
-            for rel in herb_relations:
-                herb_id = rel['end_id']
-                if herb_id not in data['entities']:
-                    continue
-                herb = data['entities'][herb_id]
-                herb_name = herb['name']
-                
-                # 添加中药节点（如果还没添加）
-                if not any(n['id'] == herb_name for n in formula_herb_network['nodes']):
-                    formula_herb_network['nodes'].append({
-                        'id': herb_name,
-                        'name': herb_name,
-                        'type': 'herb',
-                        'symbolSize': 10
-                    })
-                
-                # 添加边
-                formula_herb_network['edges'].append({
-                    'source': formula_node_id,
-                    'target': herb_name
-                })
 
-        return JsonResponse({
-            'top_formulas': result_formulas,
-            'formula_herb_network': formula_herb_network
-        })
+        formulas = [entity for entity in data["entities"].values() if _entity_type(entity) == "FORMULA"]
+        formulas.sort(key=lambda item: (-_entity_mention(item), _entity_name(item)))
+        top_formulas = formulas[:limit]
+
+        formula_rows: list[dict[str, Any]] = []
+        nodes: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
+        seen_node_ids: set[str] = set()
+        seen_edges: set[tuple[str, str]] = set()
+
+        def ensure_node(node_id: str, node_name: str, node_type: str) -> None:
+            if node_id in seen_node_ids:
+                return
+            seen_node_ids.add(node_id)
+            nodes.append({"id": node_id, "name": node_name, "type": node_type})
+
+        for formula in top_formulas:
+            formula_id = str(formula.get("entity_id") or "")
+            formula_name = _entity_name(formula)
+            ensure_node(formula_id, formula_name, "formula")
+
+            outgoing = data["outgoing_relations"].get(formula_id, [])
+            herb_ids: list[str] = []
+            for relation in outgoing:
+                if str(relation.get("relation_type") or "") != "FORMULA_CONTAINS_HERB":
+                    continue
+                herb_id = str(relation.get("end_id") or "")
+                herb_entity = data["entities"].get(herb_id)
+                if not herb_entity or _entity_type(herb_entity) != "HERB":
+                    continue
+                herb_ids.append(herb_id)
+                ensure_node(herb_id, _entity_name(herb_entity), "herb")
+                edge_key = (formula_id, herb_id)
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    edges.append({"source": formula_id, "target": herb_id})
+
+            formula_rows.append(
+                {
+                    "name": formula_name,
+                    "mention_count": _entity_mention(formula),
+                    "herb_count": len(set(herb_ids)),
+                }
+            )
+
+        return JsonResponse({"top_formulas": formula_rows, "formula_herb_network": {"nodes": nodes, "edges": edges}})
 
 
 class ClinicalPathView(View):
-    """诊疗路径分析（症状→证候→方剂）"""
+    """临床路径：症状 -> 证候 -> 方剂。"""
 
     def get(self, request) -> JsonResponse:
         data = load_graph_data()
-        
-        # 收集三类实体
-        symptoms = [e for e in data['entities'].values() if e['entity_type'] == 'SYMPTOM']
-        syndromes = [e for e in data['entities'].values() if e['entity_type'] == 'SYNDROME']
-        formulas = [e for e in data['entities'].values() if e['entity_type'] == 'FORMULA']
-        
-        # 构建症状->证候关系
-        symptom_to_syndrome = []
-        for symptom in symptoms:
-            outgoing = data['outgoing_relations'].get(symptom['entity_id'], [])
-            for rel in outgoing:
-                if rel['relation_type'] == 'SYMPTOM_TO_SYNDROME':
-                    target_id = rel['end_id']
-                    if target_id in data['entities']:
-                        target = data['entities'][target_id]
-                        if target['entity_type'] == 'SYNDROME':
-                            symptom_to_syndrome.append({
-                                'from': symptom['name'],
-                                'to': target['name'],
-                                'weight': rel.get('evidence_count', 1)
-                            })
-        
-        # 构建证候->方剂关系
-        syndrome_to_formula = []
-        for syndrome in syndromes:
-            outgoing = data['outgoing_relations'].get(syndrome['entity_id'], [])
-            for rel in outgoing:
-                if rel['relation_type'] == 'SYNDROME_TO_FORMULA':
-                    target_id = rel['end_id']
-                    if target_id in data['entities']:
-                        target = data['entities'][target_id]
-                        if target['entity_type'] == 'FORMULA':
-                            syndrome_to_formula.append({
-                                'from': syndrome['name'],
-                                'to': target['name'],
-                                'weight': rel.get('evidence_count', 1)
-                            })
-        
-        # 构建全链路桑基图 nodes 和 links
-        nodes = []
-        links = []
-        
-        # 添加症状节点
-        for s in symptoms[:10]:  # 限制数量
-            nodes.append({'id': s['name'], 'name': s['name'], 'category': 'symptom'})
-        
-        # 添加证候节点
-        for s in syndromes[:10]:
-            nodes.append({'id': s['name'], 'name': s['name'], 'category': 'syndrome'})
-        
-        # 添加方剂节点
-        for f in formulas[:10]:
-            nodes.append({'id': f['name'], 'name': f['name'], 'category': 'formula'})
-        
-        # 添加症状->证候链接
-        for link in symptom_to_syndrome:
-            if any(n['id'] == link['from'] for n in nodes) and any(n['id'] == link['to'] for n in nodes):
-                links.append({
-                    'source': link['from'],
-                    'target': link['to'],
-                    'value': link['weight']
-                })
-        
-        # 添加证候->方剂链接
-        for link in syndrome_to_formula:
-            if any(n['id'] == link['from'] for n in nodes) and any(n['id'] == link['to'] for n in nodes):
-                links.append({
-                    'source': link['from'],
-                    'target': link['to'],
-                    'value': link['weight']
-                })
-        
-        return JsonResponse({
-            'symptom_to_syndrome': symptom_to_syndrome,
-            'syndrome_to_formula': syndrome_to_formula,
-            'full_sankey': {
-                'nodes': nodes,
-                'links': links
+
+        symptom_to_syndrome_counter: Counter[tuple[str, str]] = Counter()
+        syndrome_to_formula_counter: Counter[tuple[str, str]] = Counter()
+
+        for syndrome in data["entities"].values():
+            if _entity_type(syndrome) != "SYNDROME":
+                continue
+            syndrome_id = str(syndrome.get("entity_id") or "")
+            syndrome_name = _entity_name(syndrome)
+            outgoing = data["outgoing_relations"].get(syndrome_id, [])
+            for relation in outgoing:
+                relation_type = str(relation.get("relation_type") or "")
+                end_id = str(relation.get("end_id") or "")
+                target = data["entities"].get(end_id)
+                if not target:
+                    continue
+                weight = max(1, int(relation.get("evidence_count") or 1))
+                if relation_type == "SYNDROME_HAS_SYMPTOM" and _entity_type(target) == "SYMPTOM":
+                    symptom_to_syndrome_counter[(_entity_name(target), syndrome_name)] += weight
+                elif relation_type == "SYNDROME_TO_FORMULA" and _entity_type(target) == "FORMULA":
+                    syndrome_to_formula_counter[(syndrome_name, _entity_name(target))] += weight
+
+        symptom_to_syndrome = [
+            {"from": left, "to": right, "weight": weight}
+            for (left, right), weight in symptom_to_syndrome_counter.items()
+        ]
+        syndrome_to_formula = [
+            {"from": left, "to": right, "weight": weight}
+            for (left, right), weight in syndrome_to_formula_counter.items()
+        ]
+
+        symptom_to_syndrome.sort(key=lambda item: (-int(item["weight"]), item["from"], item["to"]))
+        syndrome_to_formula.sort(key=lambda item: (-int(item["weight"]), item["from"], item["to"]))
+
+        # 组装桑基图（限制规模，防止前端过重）
+        max_symptom_links = 40
+        max_formula_links = 40
+        selected_symptom_links = symptom_to_syndrome[:max_symptom_links]
+        selected_formula_links = syndrome_to_formula[:max_formula_links]
+
+        node_category: dict[str, str] = {}
+        for item in selected_symptom_links:
+            node_category[item["from"]] = "symptom"
+            node_category[item["to"]] = "syndrome"
+        for item in selected_formula_links:
+            node_category[item["from"]] = "syndrome"
+            node_category[item["to"]] = "formula"
+
+        nodes = [{"id": name, "name": name, "category": category} for name, category in node_category.items()]
+        links = [
+            {"source": item["from"], "target": item["to"], "value": int(item["weight"])}
+            for item in [*selected_symptom_links, *selected_formula_links]
+        ]
+
+        return JsonResponse(
+            {
+                "symptom_to_syndrome": selected_symptom_links,
+                "syndrome_to_formula": selected_formula_links,
+                "full_sankey": {"nodes": nodes, "links": links},
             }
-        })
+        )
 
 
 class TextAnalysisView(View):
-    """条文分析"""
+    """条文长度、密度与条文-实体矩阵。"""
 
     def get(self, request) -> JsonResponse:
         data = load_graph_data()
-        
-        # 获取所有条文（clause_node）
-        clauses = data.get('clauses', {}).values() if 'clauses' in data else []
-        
-        # 如果有条文数据，计算每条文的长度和实体数
-        article_lengths = []
-        entity_matrix = {'articles': [], 'entities': [], 'matrix': []}
-        
-        if clauses:
-            # 提取所有实体名称作为矩阵列
-            all_entity_names = [e['name'] for e in data['entities'].values()][:20]  # 限制20个
-            
-            for clause in clauses:
-                clause_id = clause.get('clause_id', '')
-                text = clause.get('text', '')
-                article_lengths.append({
-                    'id': clause_id,
-                    'length': len(text),
-                    'entities': 0  # TODO: 从 mentions 计算
-                })
-                
-                # 构建矩阵行（该条文包含哪些实体）
-                row = []
-                clause_mentions = data.get('mentions_by_clause', {}).get(clause_id, [])
-                mentioned_entity_ids = set(m['entity_id'] for m in clause_mentions)
-                
-                for entity_name in all_entity_names:
-                    # 找到对应 entity_id
-                    entity = next((e for e in data['entities'].values() if e['name'] == entity_name), None)
-                    if entity and entity['entity_id'] in mentioned_entity_ids:
-                        row.append(1)
-                    else:
-                        row.append(0)
-                
-                entity_matrix['matrix'].append(row)
-            
-            entity_matrix['articles'] = [a['id'] for a in article_lengths]
-            entity_matrix['entities'] = all_entity_names
-        
-        return JsonResponse({
-            'article_lengths': article_lengths[:50],  # 限制条数
-            'entity_density': [],  # TODO
-            'entity_matrix': entity_matrix
-        })
+
+        clauses = sorted(
+            list(data["clauses"].values()),
+            key=lambda item: (
+                str(item.get("record_id") or ""),
+                int(item.get("line_number") or 0),
+                str(item.get("clause_id") or ""),
+            ),
+        )
+
+        mentions_by_clause: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for entity_id, mention_rows in data["mentions_by_entity"].items():
+            for mention in mention_rows:
+                clause_id = str(mention.get("clause_id") or "")
+                if not clause_id:
+                    continue
+                mentions_by_clause[clause_id].append({"entity_id": entity_id, **mention})
+
+        article_lengths: list[dict[str, Any]] = []
+        entity_density: list[dict[str, Any]] = []
+        for clause in clauses[:120]:
+            clause_id = str(clause.get("clause_id") or "")
+            text = str(clause.get("text") or "")
+            mention_rows = mentions_by_clause.get(clause_id, [])
+            mention_count = len(mention_rows)
+            unique_entities = len({str(item.get("entity_id") or "") for item in mention_rows})
+            text_len = max(1, len(text))
+            article_lengths.append({"id": clause_id, "length": len(text), "entities": unique_entities})
+            entity_density.append({"article_id": clause_id, "density": round(mention_count / text_len, 4)})
+
+        top_entities = sorted(
+            data["entities"].values(),
+            key=lambda item: (-_entity_mention(item), _entity_name(item)),
+        )[:12]
+        top_entity_ids = [str(item.get("entity_id") or "") for item in top_entities]
+        top_entity_names = [_entity_name(item) for item in top_entities]
+
+        matrix_articles = [row["id"] for row in article_lengths[:40]]
+        matrix_data: list[list[int]] = []
+        for clause_id in matrix_articles:
+            counter: Counter[str] = Counter(str(item.get("entity_id") or "") for item in mentions_by_clause.get(clause_id, []))
+            matrix_row = [int(counter.get(entity_id, 0)) for entity_id in top_entity_ids]
+            matrix_data.append(matrix_row)
+
+        return JsonResponse(
+            {
+                "article_lengths": article_lengths[:80],
+                "entity_density": entity_density[:80],
+                "entity_matrix": {
+                    "articles": matrix_articles,
+                    "entities": top_entity_names,
+                    "matrix": matrix_data,
+                },
+            }
+        )
